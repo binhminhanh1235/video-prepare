@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, str::FromStr};
+use std::{collections::HashMap, fmt};
 
 use reqwest::{
     blocking::Client,
@@ -380,9 +380,7 @@ mod tests {
                     break;
                 }
             }
-            sender
-                .send(String::from_utf8_lossy(&request).to_string())
-                .unwrap();
+            let _ = sender.send(String::from_utf8_lossy(&request).to_string());
 
             let reason = match status {
                 200 => "OK",
