@@ -1,16 +1,23 @@
+pub mod audio;
 pub mod project;
 pub mod providers;
 pub mod script;
 pub mod visual;
 
+pub use audio::{
+    audio_status_path, deterministic_remote_project_id, load_audio_status, omnivoice_source_hash,
+    AudioAttemptStatus, AudioError, AudioExecutor, AudioFlowStatus, AudioGenerationSettings,
+    AudioRunSummary, AUDIO_STATUS_SCHEMA_VERSION,
+};
 pub use project::{
     ProjectError, ProjectMetadata, ProjectStatus, ProjectStore, SceneRuntimeStatus, StoredProject,
     TaskState, PROJECT_SCHEMA_VERSION, STATUS_SCHEMA_VERSION,
 };
 pub use providers::{
-    AssetKind, CreatorAttribution, PexelsProvider, ProviderConnection, RateLimitMetadata,
-    StockAssetCandidate, StockProvider, StockProviderError, StockRendition, StockSearchPage,
-    StockSearchRequest,
+    AssetKind, CreatorAttribution, GenerateProjectOptions, OmniVoiceClient, OmniVoiceConnection,
+    OmniVoiceError, OmniVoiceImportResult, OmniVoiceJobSubmission, OmniVoiceProvider,
+    OmniVoiceRemoteJob, PexelsProvider, ProviderConnection, RateLimitMetadata, StockAssetCandidate,
+    StockProvider, StockProviderError, StockRendition, StockSearchPage, StockSearchRequest,
 };
 pub use script::{
     parse_script, MediaKind, OmniVoiceScript, OmniVoiceSection, PreparedScript, SceneSpec,
