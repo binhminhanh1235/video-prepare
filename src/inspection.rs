@@ -201,20 +201,64 @@ pub fn inspect_project(project: &StoredProject) -> ProjectInspection {
         },
     };
 
+    let visual_flow = visual_status
+        .map(|status| status.state)
+        .unwrap_or(project.status.visual_flow);
+    let audio_flow = audio_status
+        .map(|status| status.state)
+        .unwrap_or(project.status.audio_flow);
+
     ProjectInspection {
         project_id: project.metadata.project_id.clone(),
         title: project.metadata.title.clone(),
-        overall: project.status.overall,
-        visual_flow: visual_status
-            .map(|status| status.state)
-            .unwrap_or(project.status.visual_flow),
-        audio_flow: audio_status
-            .map(|status| status.state)
-            .unwrap_or(project.status.audio_flow),
+        overall: aggregate_project_state(visual_flow, audio_flow),
+        visual_flow,
+        audio_flow,
         scenes,
         audio: audio_inspection,
         problems,
     }
+}
+
+fn aggregate_project_state(visual: TaskState, audio: TaskState) -> TaskState {
+    let states = [visual, audio];
+    if states.contains(&TaskState::Running) {
+        return TaskState::Running;
+    }
+    if states
+        .iter()
+        .all(|state| matches!(state, TaskState::Completed | TaskState::Skipped))
+    {
+        return TaskState::Completed;
+    }
+    if states.contains(&TaskState::Partial) {
+        return TaskState::Partial;
+    }
+    if states.contains(&TaskState::UnknownRemote) {
+        return if states.contains(&TaskState::Completed) {
+            TaskState::Partial
+        } else {
+            TaskState::UnknownRemote
+        };
+    }
+    if states.contains(&TaskState::Interrupted) {
+        return if states.contains(&TaskState::Completed) {
+            TaskState::Partial
+        } else {
+            TaskState::Interrupted
+        };
+    }
+    if states.contains(&TaskState::Failed) {
+        return if states
+            .iter()
+            .any(|state| matches!(state, TaskState::Completed | TaskState::Partial))
+        {
+            TaskState::Partial
+        } else {
+            TaskState::Failed
+        };
+    }
+    TaskState::Pending
 }
 
 fn audio_inspection(status: &AudioFlowStatus) -> AudioInspection {
@@ -274,6 +318,7 @@ mod tests {
         let (_temp, project) = create_demo();
         let inspection = inspect_project(&project);
 
+        assert_eq!(inspection.overall, TaskState::Pending);
         assert_eq!(inspection.visual_flow, TaskState::Pending);
         assert_eq!(inspection.audio_flow, TaskState::Pending);
         assert_eq!(
@@ -348,6 +393,7 @@ mod tests {
         .unwrap();
 
         let inspection = inspect_project(&project);
+        assert_eq!(inspection.overall, TaskState::Partial);
         let scene = inspection.scene("S01").unwrap();
         assert_eq!(scene.visual_state, TaskState::Partial);
         assert_eq!(scene.visual_requests[0].completed_assets, 1);
@@ -391,6 +437,7 @@ mod tests {
         .unwrap();
 
         let inspection = inspect_project(&project);
+        assert_eq!(inspection.overall, TaskState::UnknownRemote);
         assert_eq!(inspection.audio.state, TaskState::UnknownRemote);
         assert_eq!(inspection.audio.attempts.len(), 1);
         assert_eq!(
