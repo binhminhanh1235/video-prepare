@@ -45,7 +45,10 @@ fn advertised_artifact_transport_lists_and_downloads_binary_with_bearer() {
 
     let artifacts = client.list_artifacts(&transport, "remote-a").unwrap();
     assert_eq!(artifacts.len(), 1);
-    assert_eq!(artifacts[0].relative_path, "projects/remote-a/output/full.wav");
+    assert_eq!(
+        artifacts[0].relative_path,
+        "projects/remote-a/output/full.wav"
+    );
 
     let temp = tempfile::tempdir().unwrap();
     let final_path = temp.path().join("audio/full.wav");
@@ -108,10 +111,7 @@ fn capability_gate_rejects_server_without_artifact_content_download() {
     );
 }
 
-fn spawn_server(
-    responses: Vec<Vec<u8>>,
-    captured: Arc<Mutex<Vec<CapturedRequest>>>,
-) -> String {
+fn spawn_server(responses: Vec<Vec<u8>>, captured: Arc<Mutex<Vec<CapturedRequest>>>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     thread::spawn(move || {
