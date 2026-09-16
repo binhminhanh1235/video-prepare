@@ -1,37 +1,102 @@
 use std::{env, fs, process};
 
-use video_prepare::parse_script;
+use video_prepare::{parse_script, ProjectStore};
 
 fn main() {
     let mut args = env::args().skip(1);
-    let command = args.next();
-    let path = args.next();
-
-    if command.as_deref() != Some("validate") || path.is_none() || args.next().is_some() {
-        eprintln!("Usage: video-prepare validate <script.vprep>");
-        process::exit(2);
+    match args.next().as_deref() {
+        Some("validate") => {
+            let Some(path) = args.next() else {
+                usage();
+            };
+            if args.next().is_some() {
+                usage();
+            }
+            let input = read_script(&path);
+            match parse_script(&input) {
+                Ok(script) => {
+                    println!("VALID");
+                    println!("title: {}", script.omnivoice.title);
+                    println!("scenes: {}", script.scenes.len());
+                    println!("sections: {}", script.omnivoice.sections.len());
+                    println!("input_sha256: {}", script.input_sha256);
+                }
+                Err(error) => {
+                    eprintln!("{}: {}", error.code(), error);
+                    process::exit(1);
+                }
+            }
+        }
+        Some("create-project") => {
+            let (Some(data_root), Some(project_id), Some(path)) =
+                (args.next(), args.next(), args.next())
+            else {
+                usage();
+            };
+            if args.next().is_some() {
+                usage();
+            }
+            let input = read_script(&path);
+            let prepared = match parse_script(&input) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("{}: {}", error.code(), error);
+                    process::exit(1);
+                }
+            };
+            let store = ProjectStore::new(data_root);
+            match store.create(&project_id, &input, &prepared) {
+                Ok(project) => {
+                    println!("CREATED");
+                    println!("project_id: {}", project.metadata.project_id);
+                    println!("root: {}", project.root.display());
+                    println!("input_sha256: {}", project.metadata.input_sha256);
+                }
+                Err(error) => {
+                    eprintln!("PROJECT_CREATE_ERROR: {error}");
+                    process::exit(1);
+                }
+            }
+        }
+        Some("open-project") => {
+            let Some(project_root) = args.next() else {
+                usage();
+            };
+            if args.next().is_some() {
+                usage();
+            }
+            match ProjectStore::open(project_root) {
+                Ok(project) => {
+                    println!("OPENED");
+                    println!("project_id: {}", project.metadata.project_id);
+                    println!("title: {}", project.metadata.title);
+                    println!("scenes: {}", project.metadata.scene_ids.len());
+                    println!("status: {:?}", project.status.overall);
+                }
+                Err(error) => {
+                    eprintln!("PROJECT_OPEN_ERROR: {error}");
+                    process::exit(1);
+                }
+            }
+        }
+        _ => usage(),
     }
+}
 
-    let path = path.expect("path checked above");
-    let input = match fs::read_to_string(&path) {
+fn read_script(path: &str) -> String {
+    match fs::read_to_string(path) {
         Ok(value) => value,
         Err(error) => {
             eprintln!("SCRIPT_READ_ERROR: {path}: {error}");
             process::exit(1);
         }
-    };
-
-    match parse_script(&input) {
-        Ok(script) => {
-            println!("VALID");
-            println!("title: {}", script.omnivoice.title);
-            println!("scenes: {}", script.scenes.len());
-            println!("sections: {}", script.omnivoice.sections.len());
-            println!("input_sha256: {}", script.input_sha256);
-        }
-        Err(error) => {
-            eprintln!("{}: {}", error.code(), error);
-            process::exit(1);
-        }
     }
+}
+
+fn usage() -> ! {
+    eprintln!("Usage:");
+    eprintln!("  video-prepare validate <script.vprep>");
+    eprintln!("  video-prepare create-project <data-root> <project-id> <script.vprep>");
+    eprintln!("  video-prepare open-project <project-root>");
+    process::exit(2);
 }
