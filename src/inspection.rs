@@ -117,7 +117,10 @@ pub fn inspect_project(project: &StoredProject) -> ProjectInspection {
                 .find(|status| status.id == scene.id)
                 .expect("validated project scene status");
             let visual_scene = visual_status.and_then(|status| {
-                status.scenes.iter().find(|candidate| candidate.id == scene.id)
+                status
+                    .scenes
+                    .iter()
+                    .find(|candidate| candidate.id == scene.id)
             });
 
             let visual_requests = if let Some(visual_scene) = visual_scene {
@@ -163,7 +166,9 @@ pub fn inspect_project(project: &StoredProject) -> ProjectInspection {
                 id: scene.id.clone(),
                 start_time: section.start_time.clone(),
                 end_time: section.end_time.clone(),
-                visual_state: visual_scene.map(|status| status.state).unwrap_or(coarse.visual),
+                visual_state: visual_scene
+                    .map(|status| status.state)
+                    .unwrap_or(coarse.visual),
                 audio_state: coarse.audio,
                 visual_detail_available: visual_scene.is_some(),
                 visual_requests,
@@ -239,8 +244,8 @@ mod tests {
     use super::*;
     use crate::{
         audio_status_path, parse_script, visual_status_path, AudioAttemptStatus, ProjectStore,
-        VisualAssetStatus, VisualRequestStatus, VisualSceneStatus,
-        AUDIO_STATUS_SCHEMA_VERSION, VISUAL_STATUS_SCHEMA_VERSION,
+        VisualAssetStatus, VisualRequestStatus, VisualSceneStatus, AUDIO_STATUS_SCHEMA_VERSION,
+        VISUAL_STATUS_SCHEMA_VERSION,
     };
 
     fn create_demo() -> (tempfile::TempDir, StoredProject) {
@@ -388,7 +393,10 @@ mod tests {
         let inspection = inspect_project(&project);
         assert_eq!(inspection.audio.state, TaskState::UnknownRemote);
         assert_eq!(inspection.audio.attempts.len(), 1);
-        assert_eq!(inspection.audio.attempts[0].server_base_url, "https://voice.example");
+        assert_eq!(
+            inspection.audio.attempts[0].server_base_url,
+            "https://voice.example"
+        );
         assert_eq!(inspection.audio.attempts[0].job_id, None);
         assert!(inspection
             .problems
