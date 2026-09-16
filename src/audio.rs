@@ -408,7 +408,10 @@ fn stable_idempotency_key(project_id: &str, input_hash: &str, attempt_number: us
     format!("video-prepare:{project_id}:{prefix}:audio:{attempt_number}")
 }
 
-fn save_audio_status(project_root: &Path, status: &AudioFlowStatus) -> Result<(), AudioError> {
+pub(crate) fn save_audio_status(
+    project_root: &Path,
+    status: &AudioFlowStatus,
+) -> Result<(), AudioError> {
     let path = audio_status_path(project_root);
     let parent = path
         .parent()
@@ -444,7 +447,7 @@ fn save_audio_status(project_root: &Path, status: &AudioFlowStatus) -> Result<()
     Ok(())
 }
 
-fn persist_audio_and_coarse(
+pub(crate) fn persist_audio_and_coarse(
     project: &mut StoredProject,
     status: &AudioFlowStatus,
     coarse_state: TaskState,

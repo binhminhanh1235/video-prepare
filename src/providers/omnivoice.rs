@@ -206,6 +206,14 @@ impl OmniVoiceClient {
         &self.normalized_base_url
     }
 
+    pub(crate) fn http_client(&self) -> &Client {
+        &self.client
+    }
+
+    pub(crate) fn bearer_token_for_request(&self) -> Option<&str> {
+        self.bearer_token.as_deref()
+    }
+
     pub fn test_connection(&self) -> Result<OmniVoiceConnection, OmniVoiceError> {
         let health: Value = self.get_json("health")?;
         let capabilities: CapabilitiesResponse = self.get_json("api/v1/capabilities")?;
