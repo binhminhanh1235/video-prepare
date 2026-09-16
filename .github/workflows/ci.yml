@@ -37,3 +37,10 @@ jobs:
           test -f "$DATA_ROOT/projects/demo-project/input/script.vprep"
           test -f "$DATA_ROOT/projects/demo-project/project.json"
           test -f "$DATA_ROOT/projects/demo-project/status.json"
+
+      - name: Upload generated Cargo.lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: Cargo.lock
+          retention-days: 1
