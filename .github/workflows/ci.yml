@@ -8,7 +8,7 @@ on:
       - 'feat/**'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
@@ -21,20 +21,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-
-      - name: Refresh P4 desktop lockfile and formatting once
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/p4-desktop-runtime-settings'
-        shell: bash
-        run: |
-          cargo update
-          cargo fmt --all
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock src
-          if ! git diff --cached --quiet; then
-            git commit -m "build: refresh desktop lockfile and formatting"
-            git push origin HEAD:feat/p4-desktop-runtime-settings
-          fi
 
       - name: Check formatting
         run: cargo fmt --all -- --check
