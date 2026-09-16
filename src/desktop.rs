@@ -794,7 +794,8 @@ impl VideoPrepareApp {
             ConnectionTestTarget::Pexels => {
                 let api_key = self.draft.pexels_api_key.clone();
                 thread::spawn(move || {
-                    let result = test_pexels_connection(&api_key).map_err(|error| error.to_string());
+                    let result =
+                        test_pexels_connection(&api_key).map_err(|error| error.to_string());
                     let _ = sender.send(result);
                 });
             }
@@ -854,7 +855,8 @@ impl VideoPrepareApp {
                 self.last_connection_report = Some(report);
             }
             Err(error) => {
-                self.connection_status = format!("{} connection test failed: {error}", target.label());
+                self.connection_status =
+                    format!("{} connection test failed: {error}", target.label());
                 self.connection_status_is_error = true;
                 self.last_connection_report = None;
             }
@@ -942,8 +944,14 @@ fn render_connection_report(ui: &mut egui::Ui, report: &ConnectionTestReport) {
                 "Service: {}",
                 report.service.as_deref().unwrap_or("not advertised")
             ));
-            ui.small(format!("Project import: {}", report.project_import_endpoint));
-            ui.small(format!("Generate project: {}", report.generate_project_endpoint));
+            ui.small(format!(
+                "Project import: {}",
+                report.project_import_endpoint
+            ));
+            ui.small(format!(
+                "Generate project: {}",
+                report.generate_project_endpoint
+            ));
             ui.small(format!(
                 "Jobs: {}",
                 report.jobs_endpoint.as_deref().unwrap_or("not advertised")
