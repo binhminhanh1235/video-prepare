@@ -59,7 +59,11 @@ pub fn reconcile_local_project(
     project.status.visual_flow = visual.state;
     project.status.audio_flow = audio.state;
     for scene in &mut project.status.scenes {
-        if let Some(visual_scene) = visual.scenes.iter().find(|candidate| candidate.id == scene.id) {
+        if let Some(visual_scene) = visual
+            .scenes
+            .iter()
+            .find(|candidate| candidate.id == scene.id)
+        {
             scene.visual = visual_scene.state;
         }
         scene.audio = audio.state;
@@ -176,7 +180,9 @@ fn reconcile_audio(
 
     match reconcile_local_audio_artifact(project) {
         Ok(Some(_)) | Ok(None) => {}
-        Err(error) => notes.push(format!("local audio artifact proof requires repair: {error}")),
+        Err(error) => notes.push(format!(
+            "local audio artifact proof requires repair: {error}"
+        )),
     }
 
     let mut audio = load_audio_status(&project.root, &project.metadata.project_id)
@@ -314,22 +320,22 @@ fn file_proof(path: &Path) -> Result<(u64, String), LocalReconciliationError> {
     Ok((total, format!("{:x}", hasher.finalize())))
 }
 
-fn write_json_atomic<T: Serialize>(
-    path: &Path,
-    value: &T,
-) -> Result<(), LocalReconciliationError> {
-    let parent = path.parent().ok_or_else(|| LocalReconciliationError::Json {
-        path: path.to_path_buf(),
-        message: "JSON target has no parent".to_owned(),
-    })?;
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), LocalReconciliationError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| LocalReconciliationError::Json {
+            path: path.to_path_buf(),
+            message: "JSON target has no parent".to_owned(),
+        })?;
     fs::create_dir_all(parent).map_err(|source| LocalReconciliationError::Io {
         path: parent.to_path_buf(),
         source,
     })?;
-    let mut temp = NamedTempFile::new_in(parent).map_err(|source| LocalReconciliationError::Io {
-        path: parent.to_path_buf(),
-        source,
-    })?;
+    let mut temp =
+        NamedTempFile::new_in(parent).map_err(|source| LocalReconciliationError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     serde_json::to_writer_pretty(temp.as_file_mut(), value).map_err(|error| {
         LocalReconciliationError::Json {
             path: path.to_path_buf(),
@@ -348,10 +354,11 @@ fn write_json_atomic<T: Serialize>(
             path: path.to_path_buf(),
             source,
         })?;
-    temp.persist(path).map_err(|error| LocalReconciliationError::Io {
-        path: path.to_path_buf(),
-        source: error.error,
-    })?;
+    temp.persist(path)
+        .map_err(|error| LocalReconciliationError::Io {
+            path: path.to_path_buf(),
+            source: error.error,
+        })?;
     Ok(())
 }
 
@@ -361,7 +368,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        audio::{save_audio_status, AudioAttemptStatus, AudioFlowStatus, AUDIO_STATUS_SCHEMA_VERSION},
+        audio::{
+            save_audio_status, AudioAttemptStatus, AudioFlowStatus, AUDIO_STATUS_SCHEMA_VERSION,
+        },
         parse_script, PersistedAssetKind, ProjectStore, VisualAssetStatus, VisualRequestStatus,
         VisualSceneStatus, VISUAL_STATUS_SCHEMA_VERSION,
     };
