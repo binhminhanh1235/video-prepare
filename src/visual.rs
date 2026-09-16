@@ -369,7 +369,7 @@ where
         request_index: usize,
         request: &VisualRequest,
     ) -> Result<(), VisualError> {
-        let scene_id = project.prepared_script.scenes[scene_index].id.as_str();
+        let scene_id = project.prepared_script.scenes[scene_index].id.clone();
         let query_plan = build_query_plan(&request.queries);
         let mut used_assets: HashSet<(String, String)> = status.scenes[scene_index].requests
             [request_index]
