@@ -1,8 +1,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use crate::{
-    load_audio_status, load_visual_status, sync_latest_audio_artifact, AudioFlowStatus,
-    AudioGenerationSettings, AudioExecutor, GenerateProjectOptions, HttpAssetDownloader,
+    load_audio_status, load_visual_status, sync_latest_audio_artifact, AudioExecutor,
+    AudioFlowStatus, AudioGenerationSettings, GenerateProjectOptions, HttpAssetDownloader,
     OmniVoiceClient, PexelsProvider, ProjectError, ProjectStore, QualityPreset,
     RuntimeSettingsSnapshot, StoredProject, TaskState, VisualExecutor,
 };
@@ -196,7 +196,11 @@ fn execute_audio_flow(
         AudioNextStep::SkipByAction => {
             return FlowRunReport::skipped_by_action(
                 Some(status.state),
-                format!("audio flow is {:?}, not selected by {}", status.state, action.label()),
+                format!(
+                    "audio flow is {:?}, not selected by {}",
+                    status.state,
+                    action.label()
+                ),
             );
         }
         AudioNextStep::BlockedInconsistent => {
@@ -308,10 +312,7 @@ pub fn plan_audio_next_step(
 fn retryable_state(state: TaskState) -> bool {
     matches!(
         state,
-        TaskState::Failed
-            | TaskState::Partial
-            | TaskState::Interrupted
-            | TaskState::UnknownRemote
+        TaskState::Failed | TaskState::Partial | TaskState::Interrupted | TaskState::UnknownRemote
     )
 }
 
@@ -342,7 +343,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        parse_script, AudioAttemptStatus, RuntimeSecrets, SafePreferences, AUDIO_STATUS_SCHEMA_VERSION,
+        parse_script, AudioAttemptStatus, RuntimeSecrets, SafePreferences,
+        AUDIO_STATUS_SCHEMA_VERSION,
     };
 
     fn audio_status(state: TaskState, server: &str, job_id: Option<&str>) -> AudioFlowStatus {
@@ -408,7 +410,12 @@ mod tests {
 
     #[test]
     fn retry_failed_only_selects_retryable_states() {
-        for state in [TaskState::Pending, TaskState::Running, TaskState::Completed, TaskState::Skipped] {
+        for state in [
+            TaskState::Pending,
+            TaskState::Running,
+            TaskState::Completed,
+            TaskState::Skipped,
+        ] {
             assert_eq!(
                 plan_audio_next_step(
                     RunAction::RetryFailed,
@@ -471,8 +478,14 @@ mod tests {
 
         let report = execute_project_run(snapshot, "demo", RunAction::Run).unwrap();
         assert_eq!(report.settings_revision, 7);
-        assert_eq!(report.visual.disposition, FlowRunDisposition::SkippedByPolicy);
-        assert_eq!(report.audio.disposition, FlowRunDisposition::SkippedByPolicy);
+        assert_eq!(
+            report.visual.disposition,
+            FlowRunDisposition::SkippedByPolicy
+        );
+        assert_eq!(
+            report.audio.disposition,
+            FlowRunDisposition::SkippedByPolicy
+        );
         assert_eq!(before, fs::read(project.root.join("status.json")).unwrap());
         let debug = format!("{report:?}");
         assert!(!debug.contains("token"));
@@ -507,6 +520,9 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("Pexels API key"));
-        assert_eq!(report.audio.disposition, FlowRunDisposition::SkippedByPolicy);
+        assert_eq!(
+            report.audio.disposition,
+            FlowRunDisposition::SkippedByPolicy
+        );
     }
 }
