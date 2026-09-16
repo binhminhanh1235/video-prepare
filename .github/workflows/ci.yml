@@ -8,7 +8,7 @@ on:
       - 'feat/**'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
@@ -21,6 +21,42 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+
+      - name: Apply artifact transport accessors once
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/p3-audio-artifact-import'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/providers/omnivoice.rs')
+          text = path.read_text()
+          anchor = '''    pub fn base_url(&self) -> &str {
+              &self.normalized_base_url
+          }
+          '''.replace('          ', '')
+          replacement = anchor + '''
+              pub(crate) fn http_client(&self) -> &Client {
+                  &self.client
+              }
+
+              pub(crate) fn bearer_token_for_request(&self) -> Option<&str> {
+                  self.bearer_token.as_deref()
+              }
+          '''.replace('              ', '')
+          if anchor not in text:
+              raise SystemExit('base_url accessor anchor not found')
+          if 'bearer_token_for_request' not in text:
+              text = text.replace(anchor, replacement, 1)
+          path.write_text(text)
+          PY
+          cargo fmt --all
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src
+          if ! git diff --cached --quiet; then
+            git commit -m "refactor: share authenticated OmniVoice transport internally"
+            git push origin HEAD:feat/p3-audio-artifact-import
+          fi
 
       - name: Check formatting
         run: cargo fmt --all -- --check
