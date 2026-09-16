@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::{
-    create_project_from_script_path, discover_projects, open_project_from_data_root, ProjectCatalog,
-    QualityPreset, RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
+    create_project_from_script_path, discover_projects, open_project_from_data_root,
+    ProjectCatalog, QualityPreset, RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
