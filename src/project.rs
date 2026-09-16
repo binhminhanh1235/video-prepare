@@ -280,10 +280,7 @@ fn validate_metadata(root: &Path, metadata: &ProjectMetadata) -> Result<(), Proj
     Ok(())
 }
 
-fn validate_status(
-    metadata: &ProjectMetadata,
-    status: &ProjectStatus,
-) -> Result<(), ProjectError> {
+fn validate_status(metadata: &ProjectMetadata, status: &ProjectStatus) -> Result<(), ProjectError> {
     if status.schema_version != STATUS_SCHEMA_VERSION {
         return Err(ProjectError::StatusMismatch(format!(
             "unsupported schema_version {}",
@@ -296,7 +293,11 @@ fn validate_status(
         ));
     }
 
-    let status_ids: Vec<&str> = status.scenes.iter().map(|scene| scene.id.as_str()).collect();
+    let status_ids: Vec<&str> = status
+        .scenes
+        .iter()
+        .map(|scene| scene.id.as_str())
+        .collect();
     let metadata_ids: Vec<&str> = metadata.scene_ids.iter().map(String::as_str).collect();
     if status_ids != metadata_ids {
         return Err(ProjectError::StatusMismatch(
@@ -322,7 +323,11 @@ fn validate_snapshot(
         ));
     }
 
-    let scene_ids: Vec<&str> = prepared.scenes.iter().map(|scene| scene.id.as_str()).collect();
+    let scene_ids: Vec<&str> = prepared
+        .scenes
+        .iter()
+        .map(|scene| scene.id.as_str())
+        .collect();
     let metadata_ids: Vec<&str> = metadata.scene_ids.iter().map(String::as_str).collect();
     if scene_ids != metadata_ids {
         return Err(ProjectError::MetadataMismatch(
