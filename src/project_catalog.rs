@@ -5,7 +5,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{ProjectStore, StoredProject, TaskState};
+use crate::{parse_script, ProjectError, ProjectStore, StoredProject, TaskState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectSummary {
@@ -70,6 +70,19 @@ pub enum ProjectCatalogError {
     },
 }
 
+#[derive(Debug, Error)]
+pub enum ProjectActionError {
+    #[error("cannot read script {path}: {source}")]
+    ScriptRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(transparent)]
+    Project(#[from] ProjectError),
+}
+
 pub fn discover_projects(
     data_root: impl AsRef<Path>,
 ) -> Result<ProjectCatalog, ProjectCatalogError> {
@@ -126,6 +139,29 @@ pub fn discover_projects(
         .errors
         .sort_by(|left, right| left.root.cmp(&right.root));
     Ok(catalog)
+}
+
+pub fn create_project_from_script_path(
+    data_root: impl AsRef<Path>,
+    project_id: &str,
+    script_path: impl AsRef<Path>,
+) -> Result<StoredProject, ProjectActionError> {
+    let script_path = script_path.as_ref().to_path_buf();
+    let raw = fs::read_to_string(&script_path).map_err(|source| ProjectActionError::ScriptRead {
+        path: script_path,
+        source,
+    })?;
+    let prepared = parse_script(&raw).map_err(ProjectError::from)?;
+    ProjectStore::new(data_root.as_ref())
+        .create(project_id, &raw, &prepared)
+        .map_err(ProjectActionError::from)
+}
+
+pub fn open_project_from_data_root(
+    data_root: impl AsRef<Path>,
+    project_id: &str,
+) -> Result<StoredProject, ProjectError> {
+    ProjectStore::new(data_root.as_ref()).load(project_id)
 }
 
 #[cfg(test)]
@@ -209,5 +245,52 @@ mod tests {
         });
         assert_eq!(catalog.projects[0].project_id, "a");
         assert_eq!(catalog.projects[1].project_id, "b");
+    }
+
+    #[test]
+    fn create_list_and_open_round_trip_matches_desktop_actions() {
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("input.vprep");
+        fs::write(&script_path, include_str!("../examples/demo.vprep")).unwrap();
+
+        let created =
+            create_project_from_script_path(temp.path(), "desktop-project", &script_path).unwrap();
+        let catalog = discover_projects(temp.path()).unwrap();
+        let opened = open_project_from_data_root(temp.path(), "desktop-project").unwrap();
+
+        assert_eq!(catalog.projects.len(), 1);
+        assert_eq!(catalog.projects[0].project_id, "desktop-project");
+        assert_eq!(opened.metadata, created.metadata);
+        assert_eq!(opened.status, created.status);
+    }
+
+    #[test]
+    fn invalid_script_create_leaves_no_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("invalid.vprep");
+        fs::write(&script_path, "not a video prepare script").unwrap();
+
+        assert!(create_project_from_script_path(temp.path(), "bad", &script_path).is_err());
+        let catalog = discover_projects(temp.path()).unwrap();
+        assert!(catalog.projects.is_empty());
+        assert!(catalog.errors.is_empty());
+    }
+
+    #[test]
+    fn switching_data_root_does_not_mutate_projects_in_previous_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_root = temp.path().join("old");
+        let new_root = temp.path().join("new");
+        let script_path = temp.path().join("input.vprep");
+        fs::write(&script_path, include_str!("../examples/demo.vprep")).unwrap();
+
+        create_project_from_script_path(&old_root, "kept", &script_path).unwrap();
+        let new_catalog = discover_projects(&new_root).unwrap();
+        let old_catalog = discover_projects(&old_root).unwrap();
+
+        assert!(new_catalog.projects.is_empty());
+        assert_eq!(old_catalog.projects.len(), 1);
+        assert_eq!(old_catalog.projects[0].project_id, "kept");
+        assert!(old_root.join("projects/kept/project.json").is_file());
     }
 }
