@@ -28,40 +28,41 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('src/visual.rs')
           text = path.read_text()
 
-          old_loop = '''        for scene_index in 0..project.prepared_script.scenes.len() {
-              let scene_spec = &project.prepared_script.scenes[scene_index];
-              for request_index in 0..scene_spec.visuals.len() {
-                  let request = &scene_spec.visuals[request_index];
-          '''
-          new_loop = '''        for scene_index in 0..project.prepared_script.scenes.len() {
+          loop_pattern = re.compile(
+              r'''(?m)^\s{8}for scene_index in 0\.\.project\.prepared_script\.scenes\.len\(\) \{\n'''
+              r'''\s+let scene_spec = &project\.prepared_script\.scenes\[scene_index\];\n'''
+              r'''\s+for request_index in 0\.\.scene_spec\.visuals\.len\(\) \{\n'''
+              r'''\s+let request = &scene_spec\.visuals\[request_index\];'''
+          )
+          loop_replacement = '''        for scene_index in 0..project.prepared_script.scenes.len() {
               let request_count = project.prepared_script.scenes[scene_index].visuals.len();
               for request_index in 0..request_count {
-                  let request = project.prepared_script.scenes[scene_index].visuals[request_index].clone();
-          '''
-          if old_loop not in text:
-              raise SystemExit('expected run loop pattern not found')
-          text = text.replace(old_loop, new_loop, 1)
-          text = text.replace(
-              '                    request,\n                )?;',
-              '                    &request,\n                )?;',
-              1,
-          )
+                  let request = project.prepared_script.scenes[scene_index].visuals[request_index].clone();'''
+          text, loop_count = loop_pattern.subn(loop_replacement, text, count=1)
+          if loop_count != 1:
+              raise SystemExit(f'expected one run loop pattern, found {loop_count}')
 
-          old_sig = '''    fn execute_request(
-              &self,
-              project: &StoredProject,
-          '''
-          new_sig = '''    fn execute_request(
-              &self,
-              project: &mut StoredProject,
-          '''
-          if old_sig not in text:
-              raise SystemExit('expected execute_request signature not found')
-          text = text.replace(old_sig, new_sig, 1)
+          call_pattern = re.compile(r'(?m)^(\s{20})request,\n(\s{16}\)\?;)')
+          text, call_count = call_pattern.subn(r'\1&request,\n\2', text, count=1)
+          if call_count != 1:
+              raise SystemExit(f'expected one execute_request call argument, found {call_count}')
+
+          sig_pattern = re.compile(
+              r'(?m)^    fn execute_request\(\n\s+&self,\n\s+project: &StoredProject,'
+          )
+          text, sig_count = sig_pattern.subn(
+              '    fn execute_request(\n        &self,\n        project: &mut StoredProject,',
+              text,
+              count=1,
+          )
+          if sig_count != 1:
+              raise SystemExit(f'expected one execute_request signature, found {sig_count}')
+
           path.write_text(text)
           PY
 
