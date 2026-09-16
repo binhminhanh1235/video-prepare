@@ -8,7 +8,7 @@ on:
       - 'feat/**'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
@@ -21,61 +21,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-
-      - name: Normalize P2.02 feature source
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/p2-visual-download-retry'
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          path = Path('src/visual.rs')
-          text = path.read_text()
-
-          loop_pattern = re.compile(
-              r'''(?m)^\s{8}for scene_index in 0\.\.project\.prepared_script\.scenes\.len\(\) \{\n'''
-              r'''\s+let scene_spec = &project\.prepared_script\.scenes\[scene_index\];\n'''
-              r'''\s+for request_index in 0\.\.scene_spec\.visuals\.len\(\) \{\n'''
-              r'''\s+let request = &scene_spec\.visuals\[request_index\];'''
-          )
-          loop_replacement = '''        for scene_index in 0..project.prepared_script.scenes.len() {
-              let request_count = project.prepared_script.scenes[scene_index].visuals.len();
-              for request_index in 0..request_count {
-                  let request = project.prepared_script.scenes[scene_index].visuals[request_index].clone();'''
-          text, loop_count = loop_pattern.subn(loop_replacement, text, count=1)
-          if loop_count != 1:
-              raise SystemExit(f'expected one run loop pattern, found {loop_count}')
-
-          call_pattern = re.compile(r'(?m)^(\s{20})request,\n(\s{16}\)\?;)')
-          text, call_count = call_pattern.subn(r'\1&request,\n\2', text, count=1)
-          if call_count != 1:
-              raise SystemExit(f'expected one execute_request call argument, found {call_count}')
-
-          sig_pattern = re.compile(
-              r'(?m)^    fn execute_request\(\n\s+&self,\n\s+project: &StoredProject,'
-          )
-          text, sig_count = sig_pattern.subn(
-              '    fn execute_request(\n        &self,\n        project: &mut StoredProject,',
-              text,
-              count=1,
-          )
-          if sig_count != 1:
-              raise SystemExit(f'expected one execute_request signature, found {sig_count}')
-
-          path.write_text(text)
-          PY
-
-          cargo fmt --all
-          if git diff --quiet -- src/visual.rs; then
-            echo "P2.02 source already normalized"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/visual.rs
-          git commit -m "fix: normalize visual executor borrow boundary"
-          git push origin HEAD:feat/p2-visual-download-retry
 
       - name: Check formatting
         run: cargo fmt --all -- --check
