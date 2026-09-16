@@ -27,3 +27,13 @@ jobs:
 
       - name: Validate canonical example
         run: cargo run --quiet -- validate examples/demo.vprep
+
+      - name: Create and reopen canonical project
+        shell: bash
+        run: |
+          DATA_ROOT="$(mktemp -d)"
+          cargo run --quiet -- create-project "$DATA_ROOT" demo-project examples/demo.vprep
+          cargo run --quiet -- open-project "$DATA_ROOT/projects/demo-project"
+          test -f "$DATA_ROOT/projects/demo-project/input/script.vprep"
+          test -f "$DATA_ROOT/projects/demo-project/project.json"
+          test -f "$DATA_ROOT/projects/demo-project/status.json"
