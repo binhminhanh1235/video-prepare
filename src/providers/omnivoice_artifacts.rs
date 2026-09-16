@@ -271,7 +271,8 @@ pub fn verify_local_artifact(path: &Path, expected_sha256: &str) -> Result<u64, 
 }
 
 pub fn safe_local_filename(filename: &str) -> String {
-    let name = PathBuf::from(filename)
+    let path = PathBuf::from(filename);
+    let name = path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("full.wav");
