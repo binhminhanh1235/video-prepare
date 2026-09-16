@@ -1,8 +1,10 @@
 pub mod audio;
 pub mod audio_artifacts;
+pub mod desktop;
 pub mod project;
 pub mod providers;
 pub mod script;
+pub mod settings;
 pub mod visual;
 
 pub use audio::{
@@ -15,6 +17,7 @@ pub use audio_artifacts::{
     sync_latest_audio_artifact, AudioArtifactError, AudioArtifactProof, AudioArtifactSyncSummary,
     AUDIO_ARTIFACT_SCHEMA_VERSION,
 };
+pub use desktop::{run_desktop, VideoPrepareApp};
 pub use project::{
     ProjectError, ProjectMetadata, ProjectStatus, ProjectStore, SceneRuntimeStatus, StoredProject,
     TaskState, PROJECT_SCHEMA_VERSION, STATUS_SCHEMA_VERSION,
@@ -30,6 +33,11 @@ pub use providers::{
 pub use script::{
     parse_script, MediaKind, OmniVoiceScript, OmniVoiceSection, PreparedScript, SceneSpec,
     ScriptError, VisualRequest,
+};
+pub use settings::{
+    normalize_omnivoice_url, QualityPreset, RuntimeSecrets, RuntimeSettingsDraft,
+    RuntimeSettingsSnapshot, RuntimeSettingsStore, SafePreferences, SettingsError,
+    DEFAULT_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY,
 };
 pub use visual::{
     build_query_plan, load_visual_status, visual_status_path, AssetDownloadError, AssetDownloader,
