@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::{
-    create_project_from_script_path, discover_projects, inspect_project, open_project_from_data_root,
-    ProjectCatalog, ProjectInspection, QualityPreset, RuntimeSettingsDraft, RuntimeSettingsStore,
-    StoredProject,
+    create_project_from_script_path, discover_projects, inspect_project,
+    open_project_from_data_root, ProjectCatalog, ProjectInspection, QualityPreset,
+    RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,7 +198,10 @@ impl VideoPrepareApp {
                         ui.visuals().error_fg_color,
                         format!(
                             "{} [{} / {}]: {}",
-                            problem.scope, problem.area, state_text(problem.state), problem.message
+                            problem.scope,
+                            problem.area,
+                            state_text(problem.state),
+                            problem.message
                         ),
                     );
                 }
@@ -278,7 +281,10 @@ impl VideoPrepareApp {
         });
         ui.add_space(8.0);
         ui.strong(format!("{} - {}", inspection.title, scene.id));
-        ui.label(format!("Narration window: {} to {}", scene.start_time, scene.end_time));
+        ui.label(format!(
+            "Narration window: {} to {}",
+            scene.start_time, scene.end_time
+        ));
         ui.label(format!(
             "Visual: {} | Audio: {}",
             state_text(scene.visual_state),
