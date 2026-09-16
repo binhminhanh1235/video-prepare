@@ -66,7 +66,8 @@ impl Default for SafePreferences {
 
 impl SafePreferences {
     pub fn to_json_pretty(&self) -> Result<String, SettingsError> {
-        serde_json::to_string_pretty(self).map_err(|error| SettingsError::Serialization(error.to_string()))
+        serde_json::to_string_pretty(self)
+            .map_err(|error| SettingsError::Serialization(error.to_string()))
     }
 
     pub fn from_json(input: &str) -> Result<Self, SettingsError> {
@@ -316,7 +317,10 @@ mod tests {
         let applied = store.apply(&draft).unwrap();
         assert_eq!(applied.revision, 1);
         assert_eq!(applied.safe.omnivoice_url, "https://studio.example");
-        assert_eq!(applied.secrets.omnivoice_token.as_deref(), Some("secret-token"));
+        assert_eq!(
+            applied.secrets.omnivoice_token.as_deref(),
+            Some("secret-token")
+        );
         assert_eq!(old.revision, 0);
         assert!(old.safe.omnivoice_url.is_empty());
     }

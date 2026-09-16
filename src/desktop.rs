@@ -46,9 +46,21 @@ impl eframe::App for VideoPrepareApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.screen {
-            Screen::Projects => placeholder(ui, "Project list", "Project create/open wiring starts in P4.02."),
-            Screen::Dashboard => placeholder(ui, "Project dashboard", "Run, Resume and Retry actions are not wired in P4.01."),
-            Screen::Scene => placeholder(ui, "Scene detail", "Scene-level assets, audio attempts and retry controls are not wired in P4.01."),
+            Screen::Projects => placeholder(
+                ui,
+                "Project list",
+                "Project create/open wiring starts in P4.02.",
+            ),
+            Screen::Dashboard => placeholder(
+                ui,
+                "Project dashboard",
+                "Run, Resume and Retry actions are not wired in P4.01.",
+            ),
+            Screen::Scene => placeholder(
+                ui,
+                "Scene detail",
+                "Scene-level assets, audio attempts and retry controls are not wired in P4.01.",
+            ),
             Screen::Settings => self.settings_ui(ui),
         });
     }
@@ -57,7 +69,10 @@ impl eframe::App for VideoPrepareApp {
 impl VideoPrepareApp {
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Runtime Settings");
-        ui.label(format!("Applied revision: {}", self.settings.current().revision));
+        ui.label(format!(
+            "Applied revision: {}",
+            self.settings.current().revision
+        ));
         ui.add_space(8.0);
 
         ui.group(|ui| {
@@ -106,7 +121,11 @@ impl VideoPrepareApp {
                     .selected_text(self.draft.quality_preset.as_str())
                     .show_ui(ui, |ui| {
                         for preset in QualityPreset::ALL {
-                            ui.selectable_value(&mut self.draft.quality_preset, preset, preset.as_str());
+                            ui.selectable_value(
+                                &mut self.draft.quality_preset,
+                                preset,
+                                preset.as_str(),
+                            );
                         }
                     });
             });
@@ -124,7 +143,8 @@ impl VideoPrepareApp {
                 match self.settings.apply(&self.draft) {
                     Ok(snapshot) => {
                         self.draft = RuntimeSettingsDraft::from_snapshot(&snapshot);
-                        self.status = format!("Applied runtime settings revision {}.", snapshot.revision);
+                        self.status =
+                            format!("Applied runtime settings revision {}.", snapshot.revision);
                         self.status_is_error = false;
                     }
                     Err(error) => {
