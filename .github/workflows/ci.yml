@@ -28,26 +28,26 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
           path = Path('src/providers/omnivoice.rs')
           text = path.read_text()
-          anchor = '''    pub fn base_url(&self) -> &str {
-              &self.normalized_base_url
-          }
-          '''.replace('          ', '')
-          replacement = anchor + '''
-              pub(crate) fn http_client(&self) -> &Client {
-                  &self.client
-              }
-
-              pub(crate) fn bearer_token_for_request(&self) -> Option<&str> {
-                  self.bearer_token.as_deref()
-              }
-          '''.replace('              ', '')
-          if anchor not in text:
-              raise SystemExit('base_url accessor anchor not found')
           if 'bearer_token_for_request' not in text:
-              text = text.replace(anchor, replacement, 1)
-          path.write_text(text)
+              pattern = r'(    pub fn base_url\(&self\) -> &str \{\n        &self\.normalized_base_url\n    \}\n)'
+              match = re.search(pattern, text)
+              if not match:
+                  raise SystemExit('base_url accessor structure not found')
+              addition = '''
+
+    pub(crate) fn http_client(&self) -> &Client {
+        &self.client
+    }
+
+    pub(crate) fn bearer_token_for_request(&self) -> Option<&str> {
+        self.bearer_token.as_deref()
+    }
+'''
+              text = text[:match.end()] + addition + text[match.end():]
+              path.write_text(text)
           PY
           cargo fmt --all
           git config user.name "github-actions[bot]"
