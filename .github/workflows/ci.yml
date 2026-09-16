@@ -7,6 +7,9 @@ on:
       - main
       - 'feat/**'
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -23,17 +26,17 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run tests
-        run: cargo test --all-targets --all-features
+        run: cargo test --locked --all-targets --all-features
 
       - name: Validate canonical example
-        run: cargo run --quiet -- validate examples/demo.vprep
+        run: cargo run --locked --quiet -- validate examples/demo.vprep
 
       - name: Create and reopen canonical project
         shell: bash
         run: |
           DATA_ROOT="$(mktemp -d)"
-          cargo run --quiet -- create-project "$DATA_ROOT" demo-project examples/demo.vprep
-          cargo run --quiet -- open-project "$DATA_ROOT/projects/demo-project"
+          cargo run --locked --quiet -- create-project "$DATA_ROOT" demo-project examples/demo.vprep
+          cargo run --locked --quiet -- open-project "$DATA_ROOT/projects/demo-project"
           test -f "$DATA_ROOT/projects/demo-project/input/script.vprep"
           test -f "$DATA_ROOT/projects/demo-project/project.json"
           test -f "$DATA_ROOT/projects/demo-project/status.json"
