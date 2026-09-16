@@ -2,6 +2,7 @@ pub mod audio;
 pub mod audio_artifacts;
 pub mod desktop;
 pub mod project;
+pub mod project_catalog;
 pub mod providers;
 pub mod script;
 pub mod settings;
@@ -21,6 +22,9 @@ pub use desktop::{run_desktop, VideoPrepareApp};
 pub use project::{
     ProjectError, ProjectMetadata, ProjectStatus, ProjectStore, SceneRuntimeStatus, StoredProject,
     TaskState, PROJECT_SCHEMA_VERSION, STATUS_SCHEMA_VERSION,
+};
+pub use project_catalog::{
+    discover_projects, ProjectCatalog, ProjectCatalogError, ProjectDiscoveryError, ProjectSummary,
 };
 pub use providers::{
     AssetKind, CreatorAttribution, GenerateProjectOptions, OmniVoiceArtifact,
