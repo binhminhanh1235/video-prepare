@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::{
-    create_project_from_script_path, discover_projects, open_project_from_data_root,
-    ProjectCatalog, QualityPreset, RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
+    create_project_from_script_path, discover_projects, inspect_project,
+    open_project_from_data_root, ProjectCatalog, ProjectInspection, QualityPreset,
+    RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +25,8 @@ pub struct VideoPrepareApp {
     catalog: ProjectCatalog,
     catalog_data_root: PathBuf,
     selected_project: Option<StoredProject>,
+    inspection: Option<ProjectInspection>,
+    selected_scene_id: Option<String>,
     create_project_id: String,
     create_script_path: String,
     project_status: String,
@@ -44,6 +47,8 @@ impl Default for VideoPrepareApp {
             catalog: ProjectCatalog::default(),
             catalog_data_root,
             selected_project: None,
+            inspection: None,
+            selected_scene_id: None,
             create_project_id: String::new(),
             create_script_path: String::new(),
             project_status: String::new(),
@@ -70,11 +75,7 @@ impl eframe::App for VideoPrepareApp {
         egui::CentralPanel::default().show(ctx, |ui| match self.screen {
             Screen::Projects => self.projects_ui(ui),
             Screen::Dashboard => self.dashboard_ui(ui),
-            Screen::Scene => placeholder(
-                ui,
-                "Scene detail",
-                "Scene-level assets, audio attempts and retry controls are not wired yet.",
-            ),
+            Screen::Scene => self.scene_detail_ui(ui),
             Screen::Settings => self.settings_ui(ui),
         });
     }
@@ -150,23 +151,211 @@ impl VideoPrepareApp {
 
     fn dashboard_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Project dashboard");
-        let Some(project) = self.selected_project.as_ref() else {
+        if self.selected_project.is_none() {
             ui.label("No project selected. Open a project from Projects first.");
             if ui.button("Go to Projects").clicked() {
                 self.screen = Screen::Projects;
             }
             return;
+        }
+
+        ui.horizontal(|ui| {
+            if ui.button("Refresh from disk").clicked() {
+                self.reload_selected_project();
+            }
+            ui.small("Read-only inspection. Run/Resume/Retry is wired in P4.04.");
+        });
+
+        let Some(inspection) = self.inspection.clone() else {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                "Inspection is unavailable. Refresh the selected project.",
+            );
+            return;
         };
 
-        ui.strong(&project.metadata.title);
-        ui.label(format!("Project ID: {}", project.metadata.project_id));
-        ui.label(format!("Root: {}", project.root.display()));
-        ui.label(format!("Overall: {:?}", project.status.overall));
-        ui.label(format!("Visual Flow: {:?}", project.status.visual_flow));
-        ui.label(format!("Audio Flow: {:?}", project.status.audio_flow));
-        ui.label(format!("Scenes: {}", project.status.scenes.len()));
         ui.add_space(8.0);
-        ui.label("Run, Resume and Retry orchestration is intentionally not wired in P4.02.");
+        ui.strong(&inspection.title);
+        ui.label(format!("Project ID: {}", inspection.project_id));
+        if let Some(project) = &self.selected_project {
+            ui.label(format!("Root: {}", project.root.display()));
+        }
+        ui.label(format!(
+            "Overall: {:?} | Visual: {:?} | Audio: {:?}",
+            inspection.overall, inspection.visual_flow, inspection.audio_flow
+        ));
+        ui.label(format!(
+            "Incomplete / error items: {}",
+            inspection.incomplete_count()
+        ));
+
+        if !inspection.problems.is_empty() {
+            ui.add_space(8.0);
+            ui.group(|ui| {
+                ui.strong("Incomplete / errors");
+                for problem in &inspection.problems {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        format!(
+                            "{} [{} / {}]: {}",
+                            problem.scope,
+                            problem.area,
+                            state_text(problem.state),
+                            problem.message
+                        ),
+                    );
+                }
+            });
+        }
+
+        ui.add_space(10.0);
+        ui.strong("Scenes");
+        for scene in inspection.scenes {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.strong(format!(
+                            "{}  {}-{}",
+                            scene.id, scene.start_time, scene.end_time
+                        ));
+                        ui.label(format!(
+                            "visual: {} | audio: {}",
+                            state_text(scene.visual_state),
+                            state_text(scene.audio_state)
+                        ));
+                        if scene.visual_detail_available {
+                            let completed = scene
+                                .visual_requests
+                                .iter()
+                                .filter(|request| request.state == crate::TaskState::Completed)
+                                .count();
+                            ui.small(format!(
+                                "visual requests: {completed}/{} completed",
+                                scene.visual_requests.len()
+                            ));
+                        } else {
+                            ui.colored_label(
+                                ui.visuals().error_fg_color,
+                                "visual request detail unavailable",
+                            );
+                        }
+                    });
+                    if ui.button("Inspect Scene").clicked() {
+                        self.selected_scene_id = Some(scene.id.clone());
+                        self.screen = Screen::Scene;
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        }
+    }
+
+    fn scene_detail_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Scene detail");
+        let Some(inspection) = self.inspection.clone() else {
+            ui.label("No inspected project is selected.");
+            return;
+        };
+        let Some(scene_id) = self.selected_scene_id.clone() else {
+            ui.label("Choose Inspect Scene from the project dashboard.");
+            if ui.button("Go to Dashboard").clicked() {
+                self.screen = Screen::Dashboard;
+            }
+            return;
+        };
+        let Some(scene) = inspection.scene(&scene_id).cloned() else {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("Scene `{scene_id}` no longer exists in the inspected project."),
+            );
+            return;
+        };
+
+        ui.horizontal(|ui| {
+            if ui.button("Back to Dashboard").clicked() {
+                self.screen = Screen::Dashboard;
+            }
+            if ui.button("Refresh from disk").clicked() {
+                self.reload_selected_project();
+            }
+        });
+        ui.add_space(8.0);
+        ui.strong(format!("{} - {}", inspection.title, scene.id));
+        ui.label(format!(
+            "Narration window: {} to {}",
+            scene.start_time, scene.end_time
+        ));
+        ui.label(format!(
+            "Visual: {} | Audio: {}",
+            state_text(scene.visual_state),
+            state_text(scene.audio_state)
+        ));
+
+        ui.add_space(10.0);
+        ui.group(|ui| {
+            ui.strong("Visual requests");
+            if !scene.visual_detail_available {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    "Visual status detail could not be loaded. See Dashboard errors.",
+                );
+            } else {
+                for request in &scene.visual_requests {
+                    ui.separator();
+                    ui.label(format!(
+                        "{}: {} | assets {}/{}",
+                        request.id,
+                        state_text(request.state),
+                        request.completed_assets,
+                        request.target_count
+                    ));
+                    if !request.attempted_queries.is_empty() {
+                        ui.small(format!(
+                            "attempted queries: {}",
+                            request.attempted_queries.join(" | ")
+                        ));
+                    }
+                    if let Some(query) = &request.successful_query {
+                        ui.small(format!("successful query: {query}"));
+                    }
+                    if let Some(error) = &request.last_error {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
+                }
+            }
+        });
+
+        ui.add_space(10.0);
+        ui.group(|ui| {
+            ui.strong("Audio flow / remote attempts");
+            ui.label(format!("Flow: {}", state_text(inspection.audio.state)));
+            if !inspection.audio.detail_available {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    "Audio status detail could not be loaded. See Dashboard errors.",
+                );
+            } else if inspection.audio.attempts.is_empty() {
+                ui.label("No remote audio attempt has been submitted yet.");
+            } else {
+                for attempt in &inspection.audio.attempts {
+                    ui.separator();
+                    ui.label(format!(
+                        "{}: {}",
+                        attempt.attempt_id,
+                        state_text(attempt.state)
+                    ));
+                    ui.small(format!("server: {}", attempt.server_base_url));
+                    ui.small(format!("remote project: {}", attempt.remote_project_id));
+                    ui.small(format!(
+                        "job: {}",
+                        attempt.job_id.as_deref().unwrap_or("not assigned")
+                    ));
+                    if let Some(error) = &attempt.last_error {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
+                }
+            }
+        });
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
@@ -261,6 +450,8 @@ impl VideoPrepareApp {
         });
         if refresh_catalog {
             self.selected_project = None;
+            self.inspection = None;
+            self.selected_scene_id = None;
             self.refresh_projects();
         }
 
@@ -303,7 +494,7 @@ impl VideoPrepareApp {
                 self.project_status_is_error = false;
                 self.create_project_id.clear();
                 self.create_script_path.clear();
-                self.selected_project = Some(project);
+                self.select_project(project);
                 self.refresh_projects();
                 self.screen = Screen::Dashboard;
             }
@@ -320,13 +511,45 @@ impl VideoPrepareApp {
             Ok(project) => {
                 self.project_status = format!("Opened project `{project_id}`.");
                 self.project_status_is_error = false;
-                self.selected_project = Some(project);
+                self.select_project(project);
                 self.screen = Screen::Dashboard;
             }
             Err(error) => {
                 self.project_status = format!("Project open failed: {error}");
                 self.project_status_is_error = true;
                 self.refresh_projects();
+            }
+        }
+    }
+
+    fn select_project(&mut self, project: StoredProject) {
+        self.inspection = Some(inspect_project(&project));
+        self.selected_scene_id = None;
+        self.selected_project = Some(project);
+    }
+
+    fn reload_selected_project(&mut self) {
+        let Some(project_id) = self
+            .selected_project
+            .as_ref()
+            .map(|project| project.metadata.project_id.clone())
+        else {
+            self.project_status = "No selected project to refresh.".to_owned();
+            self.project_status_is_error = true;
+            return;
+        };
+        let data_root = self.settings.current().safe.data_root.clone();
+        match open_project_from_data_root(&data_root, &project_id) {
+            Ok(project) => {
+                self.inspection = Some(inspect_project(&project));
+                self.selected_project = Some(project);
+                self.project_status = format!("Refreshed project `{project_id}` from disk.");
+                self.project_status_is_error = false;
+            }
+            Err(error) => {
+                self.project_status = format!("Project refresh failed: {error}");
+                self.project_status_is_error = true;
+                self.inspection = None;
             }
         }
     }
@@ -346,14 +569,22 @@ fn nav_button(ui: &mut egui::Ui, screen: &mut Screen, target: Screen, label: &st
     }
 }
 
-fn placeholder(ui: &mut egui::Ui, title: &str, detail: &str) {
-    ui.heading(title);
-    ui.label(detail);
-}
-
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.horizontal(|ui| {
         ui.label(label);
         ui.text_edit_singleline(value);
     });
+}
+
+fn state_text(state: crate::TaskState) -> &'static str {
+    match state {
+        crate::TaskState::Pending => "PENDING",
+        crate::TaskState::Running => "RUNNING",
+        crate::TaskState::Partial => "PARTIAL",
+        crate::TaskState::Completed => "COMPLETED",
+        crate::TaskState::Failed => "FAILED",
+        crate::TaskState::Skipped => "SKIPPED",
+        crate::TaskState::Interrupted => "INTERRUPTED",
+        crate::TaskState::UnknownRemote => "UNKNOWN_REMOTE",
+    }
 }
