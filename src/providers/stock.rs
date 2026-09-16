@@ -14,7 +14,11 @@ pub struct StockSearchRequest {
 }
 
 impl StockSearchRequest {
-    pub fn new(query: impl Into<String>, page: u32, per_page: u8) -> Result<Self, StockProviderError> {
+    pub fn new(
+        query: impl Into<String>,
+        page: u32,
+        per_page: u8,
+    ) -> Result<Self, StockProviderError> {
         let query = query.into();
         if query.trim().is_empty() {
             return Err(StockProviderError::InvalidRequest(
