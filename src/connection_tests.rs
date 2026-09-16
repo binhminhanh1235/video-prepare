@@ -78,7 +78,9 @@ pub fn test_omnivoice_connection(
     let connection = client
         .test_connection()
         .map_err(|error| ConnectionTestError::OmniVoice(error.to_string()))?;
-    Ok(ConnectionTestReport::OmniVoice(omnivoice_report(connection)))
+    Ok(ConnectionTestReport::OmniVoice(omnivoice_report(
+        connection,
+    )))
 }
 
 fn pexels_report(connection: ProviderConnection) -> PexelsConnectionReport {
