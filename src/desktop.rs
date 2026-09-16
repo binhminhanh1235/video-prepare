@@ -1,10 +1,10 @@
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
 
 use eframe::egui;
 
 use crate::{
-    discover_projects, parse_script, ProjectCatalog, ProjectStore, QualityPreset,
-    RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
+    create_project_from_script_path, discover_projects, open_project_from_data_root, ProjectCatalog,
+    QualityPreset, RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,27 +295,9 @@ impl VideoPrepareApp {
 
     fn create_project_from_script(&mut self) {
         let project_id = self.create_project_id.trim().to_owned();
-        let script_path = PathBuf::from(self.create_script_path.trim());
-        let raw = match fs::read_to_string(&script_path) {
-            Ok(raw) => raw,
-            Err(error) => {
-                self.project_status =
-                    format!("Cannot read script {}: {}", script_path.display(), error);
-                self.project_status_is_error = true;
-                return;
-            }
-        };
-        let prepared = match parse_script(&raw) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                self.project_status = format!("{}: {}", error.code(), error);
-                self.project_status_is_error = true;
-                return;
-            }
-        };
+        let script_path = self.create_script_path.trim().to_owned();
         let data_root = self.settings.current().safe.data_root.clone();
-        let store = ProjectStore::new(&data_root);
-        match store.create(&project_id, &raw, &prepared) {
+        match create_project_from_script_path(&data_root, &project_id, &script_path) {
             Ok(project) => {
                 self.project_status = format!("Created project `{}`.", project.metadata.project_id);
                 self.project_status_is_error = false;
@@ -334,8 +316,7 @@ impl VideoPrepareApp {
 
     fn open_project(&mut self, project_id: &str) {
         let data_root = self.settings.current().safe.data_root.clone();
-        let store = ProjectStore::new(data_root);
-        match store.load(project_id) {
+        match open_project_from_data_root(&data_root, project_id) {
             Ok(project) => {
                 self.project_status = format!("Opened project `{project_id}`.");
                 self.project_status_is_error = false;
