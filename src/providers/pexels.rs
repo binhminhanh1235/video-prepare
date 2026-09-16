@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, str::FromStr};
 
 use reqwest::{
     blocking::Client,
@@ -36,15 +36,13 @@ impl PexelsProvider {
         Self::with_base_url(api_key, PEXELS_API_BASE)
     }
 
-    fn with_base_url(
-        api_key: impl AsRef<str>,
-        base_url: &str,
-    ) -> Result<Self, StockProviderError> {
+    fn with_base_url(api_key: impl AsRef<str>, base_url: &str) -> Result<Self, StockProviderError> {
         let key = api_key.as_ref().trim();
         if key.is_empty() {
             return Err(StockProviderError::InvalidApiKey);
         }
-        let authorization = HeaderValue::from_str(key).map_err(|_| StockProviderError::InvalidApiKey)?;
+        let authorization =
+            HeaderValue::from_str(key).map_err(|_| StockProviderError::InvalidApiKey)?;
         let base_url = Url::parse(base_url).map_err(|_| {
             StockProviderError::InvalidRequest("invalid Pexels base URL".to_owned())
         })?;
@@ -91,9 +89,10 @@ impl PexelsProvider {
 
         let rate_limit = parse_rate_limit(&headers);
         let bytes = response.bytes().map_err(transport_error)?;
-        let payload = serde_json::from_slice(&bytes).map_err(|error| StockProviderError::Decode {
-            message: error.to_string(),
-        })?;
+        let payload =
+            serde_json::from_slice(&bytes).map_err(|error| StockProviderError::Decode {
+                message: error.to_string(),
+            })?;
         Ok((payload, rate_limit))
     }
 }
@@ -157,11 +156,9 @@ fn validate_request(request: &StockSearchRequest) -> Result<(), StockProviderErr
 
 fn classify_status(status: StatusCode, headers: &HeaderMap) -> StockProviderError {
     match status {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-            StockProviderError::Authentication {
-                status: status.as_u16(),
-            }
-        }
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => StockProviderError::Authentication {
+            status: status.as_u16(),
+        },
         StatusCode::TOO_MANY_REQUESTS => StockProviderError::RateLimited {
             retry_after_seconds: parse_header_u64(headers, RETRY_AFTER.as_str()),
         },
@@ -501,7 +498,10 @@ mod tests {
         assert_eq!(result.items[0].kind, AssetKind::Video);
         assert_eq!(result.items[0].duration_seconds, Some(12));
         assert_eq!(result.items[0].creator.name, "Bob");
-        assert_eq!(result.items[0].renditions[0].mime_type.as_deref(), Some("video/mp4"));
+        assert_eq!(
+            result.items[0].renditions[0].mime_type.as_deref(),
+            Some("video/mp4")
+        );
         assert_eq!(result.items[0].renditions[0].fps, Some(29.97));
     }
 
@@ -538,8 +538,8 @@ mod tests {
 
     #[test]
     fn api_key_is_redacted_from_debug_and_errors() {
-        let provider = PexelsProvider::with_base_url("super-secret-key", "http://127.0.0.1:1/")
-            .unwrap();
+        let provider =
+            PexelsProvider::with_base_url("super-secret-key", "http://127.0.0.1:1/").unwrap();
         assert!(!format!("{provider:?}").contains("super-secret-key"));
 
         let request = StockSearchRequest::new("nature", 1, 1).unwrap();
