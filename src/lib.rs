@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod audio_artifacts;
 pub mod desktop;
+pub mod inspection;
 pub mod project;
 pub mod project_catalog;
 pub mod providers;
@@ -19,6 +20,10 @@ pub use audio_artifacts::{
     AUDIO_ARTIFACT_SCHEMA_VERSION,
 };
 pub use desktop::{run_desktop, VideoPrepareApp};
+pub use inspection::{
+    inspect_project, AudioAttemptInspection, AudioInspection, InspectionProblem, ProjectInspection,
+    SceneInspection, VisualRequestInspection,
+};
 pub use project::{
     ProjectError, ProjectMetadata, ProjectStatus, ProjectStore, SceneRuntimeStatus, StoredProject,
     TaskState, PROJECT_SCHEMA_VERSION, STATUS_SCHEMA_VERSION,
