@@ -1,8 +1,7 @@
 use std::{fs, path::PathBuf};
 
-use video_prepare::{
-    parse_script, test_atomic_status_write_failure, ProjectError, ProjectStore, TaskState,
-};
+use video_prepare::project::test_atomic_status_write_failure;
+use video_prepare::{parse_script, ProjectError, ProjectStore, TaskState};
 
 const DEMO: &str = include_str!("../examples/demo.vprep");
 
