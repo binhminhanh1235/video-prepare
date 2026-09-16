@@ -13,8 +13,8 @@ use thiserror::Error;
 
 use crate::{
     AssetKind, CreatorAttribution, MediaKind, ProjectError, ProjectStore, StockAssetCandidate,
-    StockProvider, StockProviderError, StockRendition, StockSearchRequest, StoredProject, TaskState,
-    VisualRequest,
+    StockProvider, StockProviderError, StockRendition, StockSearchRequest, StoredProject,
+    TaskState, VisualRequest,
 };
 
 pub const VISUAL_STATUS_SCHEMA_VERSION: u32 = 1;
@@ -207,13 +207,13 @@ impl AssetDownloader for HttpAssetDownloader {
         final_path: &Path,
     ) -> Result<DownloadReceipt, AssetDownloadError> {
         let parsed = Url::parse(url).map_err(|_| AssetDownloadError::InvalidUrl)?;
-        let mut response = self
-            .client
-            .get(parsed)
-            .send()
-            .map_err(|error| AssetDownloadError::Transport {
-                message: error.without_url().to_string(),
-            })?;
+        let mut response =
+            self.client
+                .get(parsed)
+                .send()
+                .map_err(|error| AssetDownloadError::Transport {
+                    message: error.without_url().to_string(),
+                })?;
         if !response.status().is_success() {
             return Err(AssetDownloadError::HttpStatus {
                 status: response.status().as_u16(),
@@ -235,11 +235,12 @@ impl AssetDownloader for HttpAssetDownloader {
         let mut buffer = [0_u8; 64 * 1024];
 
         loop {
-            let read = response
-                .read(&mut buffer)
-                .map_err(|error| AssetDownloadError::Transport {
-                    message: error.to_string(),
-                })?;
+            let read =
+                response
+                    .read(&mut buffer)
+                    .map_err(|error| AssetDownloadError::Transport {
+                        message: error.to_string(),
+                    })?;
             if read == 0 {
                 break;
             }
@@ -333,9 +334,10 @@ where
         persist_visual_state(project, &status)?;
 
         for scene_index in 0..project.prepared_script.scenes.len() {
-            let scene_spec = &project.prepared_script.scenes[scene_index];
-            for request_index in 0..scene_spec.visuals.len() {
-                let request = &scene_spec.visuals[request_index];
+            let request_count = project.prepared_script.scenes[scene_index].visuals.len();
+            for request_index in 0..request_count {
+                let request =
+                    project.prepared_script.scenes[scene_index].visuals[request_index].clone();
                 let current = &status.scenes[scene_index].requests[request_index];
                 if current.state == TaskState::Completed
                     && current.assets.len() >= request.count as usize
@@ -348,13 +350,7 @@ where
                 recompute_states(&mut status);
                 persist_visual_state(project, &status)?;
 
-                self.execute_request(
-                    project,
-                    &mut status,
-                    scene_index,
-                    request_index,
-                    request,
-                )?;
+                self.execute_request(project, &mut status, scene_index, request_index, &request)?;
                 recompute_states(&mut status);
                 persist_visual_state(project, &status)?;
             }
@@ -367,7 +363,7 @@ where
 
     fn execute_request(
         &self,
-        project: &StoredProject,
+        project: &mut StoredProject,
         status: &mut VisualFlowStatus,
         scene_index: usize,
         request_index: usize,
@@ -383,7 +379,9 @@ where
             .collect();
 
         for query in query_plan {
-            if status.scenes[scene_index].requests[request_index].assets.len()
+            if status.scenes[scene_index].requests[request_index]
+                .assets
+                .len()
                 >= request.count as usize
             {
                 break;
@@ -395,8 +393,7 @@ where
             let candidates = match self.search(request.media, &query) {
                 Ok(candidates) => candidates,
                 Err(error) => {
-                    let request_status =
-                        &mut status.scenes[scene_index].requests[request_index];
+                    let request_status = &mut status.scenes[scene_index].requests[request_index];
                     request_status.state = state_for_asset_count(
                         request_status.assets.len(),
                         request.count as usize,
@@ -408,7 +405,9 @@ where
             };
 
             for candidate in candidates {
-                if status.scenes[scene_index].requests[request_index].assets.len()
+                if status.scenes[scene_index].requests[request_index]
+                    .assets
+                    .len()
                     >= request.count as usize
                 {
                     break;
@@ -500,13 +499,11 @@ where
             request_status.state = TaskState::Completed;
             request_status.last_error = None;
         } else {
-            request_status.state = state_for_asset_count(
-                request_status.assets.len(),
-                request.count as usize,
-                true,
-            );
+            request_status.state =
+                state_for_asset_count(request_status.assets.len(), request.count as usize, true);
             if request_status.last_error.is_none() {
-                request_status.last_error = Some("no downloadable stock candidate found".to_owned());
+                request_status.last_error =
+                    Some("no downloadable stock candidate found".to_owned());
             }
         }
         Ok(())
@@ -619,7 +616,8 @@ fn validate_visual_status(
                 script_scene.id
             )));
         }
-        for (stored_request, script_request) in stored_scene.requests.iter().zip(&script_scene.visuals)
+        for (stored_request, script_request) in
+            stored_scene.requests.iter().zip(&script_scene.visuals)
         {
             if stored_request.id != script_request.id {
                 return Err(VisualError::InvalidState(format!(
@@ -638,7 +636,8 @@ fn reconcile_assets(
 ) -> Result<(), VisualError> {
     for (scene_index, scene) in status.scenes.iter_mut().enumerate() {
         for (request_index, request_status) in scene.requests.iter_mut().enumerate() {
-            let target_count = project.prepared_script.scenes[scene_index].visuals[request_index].count;
+            let target_count =
+                project.prepared_script.scenes[scene_index].visuals[request_index].count;
             let was_running = request_status.state == TaskState::Running;
             let mut invalid = false;
             request_status.assets.retain(|asset| {
@@ -678,7 +677,11 @@ fn persist_visual_state(
     write_json_atomic(&visual_status_path(&project.root), status)?;
     project.status.visual_flow = status.state;
     for scene in &mut project.status.scenes {
-        if let Some(visual_scene) = status.scenes.iter().find(|candidate| candidate.id == scene.id) {
+        if let Some(visual_scene) = status
+            .scenes
+            .iter()
+            .find(|candidate| candidate.id == scene.id)
+        {
             scene.visual = visual_scene.state;
         }
     }
@@ -905,11 +908,16 @@ fn extension_for_rendition(rendition: &StockRendition) -> String {
         }
     }
     if let Ok(url) = Url::parse(&rendition.url) {
-        if let Some(extension) = Path::new(url.path()).extension().and_then(|value| value.to_str()) {
+        if let Some(extension) = Path::new(url.path())
+            .extension()
+            .and_then(|value| value.to_str())
+        {
             let normalized = extension.to_ascii_lowercase();
             if !normalized.is_empty()
                 && normalized.len() <= 8
-                && normalized.chars().all(|character| character.is_ascii_alphanumeric())
+                && normalized
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
             {
                 return normalized;
             }
@@ -1117,7 +1125,11 @@ mod tests {
             },
             width: Some(1920),
             height: Some(1080),
-            duration_seconds: if kind == AssetKind::Video { Some(8) } else { None },
+            duration_seconds: if kind == AssetKind::Video {
+                Some(8)
+            } else {
+                None
+            },
             preview_url: None,
             alt_text: None,
             renditions: vec![StockRendition {
@@ -1134,7 +1146,11 @@ mod tests {
                 }),
                 width: Some(1920),
                 height: Some(1080),
-                fps: if kind == AssetKind::Video { Some(30.0) } else { None },
+                fps: if kind == AssetKind::Video {
+                    Some(30.0)
+                } else {
+                    None
+                },
             }],
         }
     }
@@ -1176,10 +1192,7 @@ scenes:
             "  calm man & window  ".to_owned(),
             "calm man window".to_owned(),
         ]);
-        assert_eq!(
-            plan,
-            vec!["calm man & window", "calm man window"]
-        );
+        assert_eq!(plan, vec!["calm man & window", "calm man window"]);
     }
 
     #[test]
@@ -1191,12 +1204,20 @@ scenes:
         provider.set(
             AssetKind::Image,
             "calm man & window",
-            vec![candidate("img-1", AssetKind::Image, "https://asset.test/img-1.jpg")],
+            vec![candidate(
+                "img-1",
+                AssetKind::Image,
+                "https://asset.test/img-1.jpg",
+            )],
         );
         provider.set(
             AssetKind::Video,
             "busy street",
-            vec![candidate("vid-1", AssetKind::Video, "https://asset.test/vid-1.mp4")],
+            vec![candidate(
+                "vid-1",
+                AssetKind::Video,
+                "https://asset.test/vid-1.mp4",
+            )],
         );
         downloader.set("https://asset.test/img-1.jpg", b"image-bytes");
         downloader.set("https://asset.test/vid-1.mp4", b"video-bytes");
@@ -1234,12 +1255,20 @@ scenes:
         provider.set(
             AssetKind::Image,
             "calm man window",
-            vec![candidate("img-2", AssetKind::Image, "https://asset.test/img-2.jpg")],
+            vec![candidate(
+                "img-2",
+                AssetKind::Image,
+                "https://asset.test/img-2.jpg",
+            )],
         );
         provider.set(
             AssetKind::Video,
             "busy street",
-            vec![candidate("vid-2", AssetKind::Video, "https://asset.test/vid-2.mp4")],
+            vec![candidate(
+                "vid-2",
+                AssetKind::Video,
+                "https://asset.test/vid-2.mp4",
+            )],
         );
         downloader.set("https://asset.test/img-2.jpg", b"image-2");
         downloader.set("https://asset.test/vid-2.mp4", b"video-2");
@@ -1266,7 +1295,11 @@ scenes:
         provider.set(
             AssetKind::Image,
             "calm man & window",
-            vec![candidate("img-3", AssetKind::Image, "https://asset.test/img-3.jpg")],
+            vec![candidate(
+                "img-3",
+                AssetKind::Image,
+                "https://asset.test/img-3.jpg",
+            )],
         );
         downloader.set("https://asset.test/img-3.jpg", b"image-3");
 
@@ -1275,13 +1308,21 @@ scenes:
             .unwrap();
         assert_eq!(first.state, TaskState::Partial);
         let first_calls = provider.calls();
-        assert!(first_calls.iter().any(|(kind, _)| *kind == AssetKind::Image));
-        assert!(first_calls.iter().any(|(kind, _)| *kind == AssetKind::Video));
+        assert!(first_calls
+            .iter()
+            .any(|(kind, _)| *kind == AssetKind::Image));
+        assert!(first_calls
+            .iter()
+            .any(|(kind, _)| *kind == AssetKind::Video));
 
         provider.set(
             AssetKind::Video,
             "busy street",
-            vec![candidate("vid-3", AssetKind::Video, "https://asset.test/vid-3.mp4")],
+            vec![candidate(
+                "vid-3",
+                AssetKind::Video,
+                "https://asset.test/vid-3.mp4",
+            )],
         );
         downloader.set("https://asset.test/vid-3.mp4", b"video-3");
         provider.calls.lock().unwrap().clear();
@@ -1309,12 +1350,20 @@ scenes:
         provider.set(
             AssetKind::Image,
             "calm man & window",
-            vec![candidate("img-4", AssetKind::Image, "https://asset.test/img-4.jpg")],
+            vec![candidate(
+                "img-4",
+                AssetKind::Image,
+                "https://asset.test/img-4.jpg",
+            )],
         );
         provider.set(
             AssetKind::Video,
             "busy street",
-            vec![candidate("vid-4", AssetKind::Video, "https://asset.test/vid-4.mp4")],
+            vec![candidate(
+                "vid-4",
+                AssetKind::Video,
+                "https://asset.test/vid-4.mp4",
+            )],
         );
         downloader.set("https://asset.test/img-4.jpg", b"image-4");
         downloader.set("https://asset.test/vid-4.mp4", b"video-4");
@@ -1323,8 +1372,12 @@ scenes:
             .unwrap();
 
         let status = load_visual_status(&project).unwrap();
-        fs::remove_file(project.root.join(&status.scenes[0].requests[0].assets[0].relative_path))
-            .unwrap();
+        fs::remove_file(
+            project
+                .root
+                .join(&status.scenes[0].requests[0].assets[0].relative_path),
+        )
+        .unwrap();
         provider.calls.lock().unwrap().clear();
         downloader.calls.lock().unwrap().clear();
 
