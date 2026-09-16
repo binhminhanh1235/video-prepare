@@ -1,13 +1,19 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use video_prepare::project::test_atomic_status_write_failure;
 use video_prepare::{parse_script, ProjectError, ProjectStore, TaskState};
 
 const DEMO: &str = include_str!("../examples/demo.vprep");
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn temp_data_root() -> PathBuf {
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let root = std::env::temp_dir().join(format!(
-        "video-prepare-test-{}-{}",
+        "video-prepare-test-{}-{}-{sequence}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
