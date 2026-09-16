@@ -299,11 +299,8 @@ impl VideoPrepareApp {
         let raw = match fs::read_to_string(&script_path) {
             Ok(raw) => raw,
             Err(error) => {
-                self.project_status = format!(
-                    "Cannot read script {}: {}",
-                    script_path.display(),
-                    error
-                );
+                self.project_status =
+                    format!("Cannot read script {}: {}", script_path.display(), error);
                 self.project_status_is_error = true;
                 return;
             }
