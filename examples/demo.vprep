@@ -1,0 +1,60 @@
+--- SCENES ---
+
+format_version: 1
+
+scenes:
+  - id: S01
+    visuals:
+      - id: V01
+        media: video
+        queries:
+          - "thoughtful man sitting alone by window cinematic"
+          - "lonely man looking through window"
+        count: 2
+      - id: V02
+        media: image
+        queries:
+          - "dark quiet room cinematic"
+        count: 1
+
+  - id: S02
+    visuals:
+      - id: V01
+        media: video
+        queries:
+          - "calm man ignoring angry conversation"
+          - "person calmly walking away from argument"
+        count: 2
+
+  - id: S03
+    visuals:
+      - id: V01
+        media: either
+        queries:
+          - "empty street at night cinematic"
+          - "lonely city street at night"
+        count: 1
+
+--- OMNIVOICE ---
+
+# Why Silence Is Powerful
+
+## S01 - 0:00-0:20
+
+### Silence is not weakness
+
+[WARM] Most people believe silence means weakness.
+
+But silence can also mean control.
+
+## S02 - 0:20-0:42
+
+### Stop reacting
+
+[EMPHASIZE] You do not have to react to every provocation.
+
+Sometimes the strongest response is no response at all.
+
+## S03 - 0:42-1:05
+
+[SOFT] Silence gives you enough distance to see clearly.
