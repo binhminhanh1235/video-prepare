@@ -103,7 +103,9 @@ pub enum AudioError {
     #[error("remote OmniVoice identity mismatch: {0}")]
     RemoteIdentityMismatch(String),
 
-    #[error("remote generation submission has unknown outcome; durable attempt state was preserved")]
+    #[error(
+        "remote generation submission has unknown outcome; durable attempt state was preserved"
+    )]
     RemoteSubmitUnknown,
 
     #[error("no UNKNOWN_REMOTE submission is available for retry")]
@@ -152,10 +154,8 @@ impl<'a, P: OmniVoiceProvider> AudioExecutor<'a, P> {
         status.artifact_content_endpoint = connection.artifact_content_endpoint.clone();
 
         let source_hash = omnivoice_source_hash(&project.prepared_script.omnivoice.raw_markdown);
-        let remote_project_id = deterministic_remote_project_id(
-            &project.metadata.project_id,
-            &source_hash,
-        );
+        let remote_project_id =
+            deterministic_remote_project_id(&project.metadata.project_id, &source_hash);
         let attempt_number = status.attempts.len() + 1;
         let attempt_id = format!("A{attempt_number:04}");
         let idempotency_key = stable_idempotency_key(
@@ -226,10 +226,11 @@ impl<'a, P: OmniVoiceProvider> AudioExecutor<'a, P> {
         }
         save_audio_status(&project.root, &status)?;
 
-        match self
-            .provider
-            .generate_project(&remote_project_id, &settings.generate, &idempotency_key)
-        {
+        match self.provider.generate_project(
+            &remote_project_id,
+            &settings.generate,
+            &idempotency_key,
+        ) {
             Ok(submission) => {
                 if submission.job_id.trim().is_empty() {
                     let error = AudioError::RemoteIdentityMismatch(
@@ -272,10 +273,7 @@ impl<'a, P: OmniVoiceProvider> AudioExecutor<'a, P> {
     ) -> Result<AudioRunSummary, AudioError> {
         self.provider.test_connection()?;
         let mut status = load_audio_status(&project.root, &project.metadata.project_id)?;
-        let latest = status
-            .attempts
-            .last()
-            .ok_or(AudioError::NoUnknownSubmit)?;
+        let latest = status.attempts.last().ok_or(AudioError::NoUnknownSubmit)?;
         if latest.state != TaskState::UnknownRemote || latest.job_id.is_some() {
             return Err(AudioError::NoUnknownSubmit);
         }
@@ -283,10 +281,11 @@ impl<'a, P: OmniVoiceProvider> AudioExecutor<'a, P> {
 
         let remote_project_id = latest.remote_project_id.clone();
         let idempotency_key = latest.idempotency_key.clone();
-        match self
-            .provider
-            .generate_project(&remote_project_id, &settings.generate, &idempotency_key)
-        {
+        match self.provider.generate_project(
+            &remote_project_id,
+            &settings.generate,
+            &idempotency_key,
+        ) {
             Ok(submission) => {
                 if submission.job_id.trim().is_empty() {
                     return Err(AudioError::RemoteIdentityMismatch(
@@ -322,10 +321,9 @@ impl<'a, P: OmniVoiceProvider> AudioExecutor<'a, P> {
         project: &mut StoredProject,
     ) -> Result<AudioRunSummary, AudioError> {
         let mut status = load_audio_status(&project.root, &project.metadata.project_id)?;
-        let latest = status
-            .attempts
-            .last()
-            .ok_or_else(|| AudioError::StateMismatch("audio attempt history is empty".to_owned()))?;
+        let latest = status.attempts.last().ok_or_else(|| {
+            AudioError::StateMismatch("audio attempt history is empty".to_owned())
+        })?;
         ensure_same_server(latest, self.provider.base_url())?;
         let job_id = latest
             .job_id
@@ -628,7 +626,10 @@ mod tests {
             _max_chunk_words: u32,
             _max_chunk_chars: u32,
         ) -> Result<OmniVoiceImportResult, OmniVoiceError> {
-            self.captured_scripts.lock().unwrap().push(script.to_owned());
+            self.captured_scripts
+                .lock()
+                .unwrap()
+                .push(script.to_owned());
             Ok(OmniVoiceImportResult {
                 project_id: project_id.to_owned(),
                 source_hash: omnivoice_source_hash(script),
@@ -756,9 +757,15 @@ mod tests {
         let status = load_audio_status(&project.root, "demo-switch").unwrap();
         assert_eq!(status.attempts.len(), 2);
         assert_eq!(status.attempts[0].state, TaskState::UnknownRemote);
-        assert_eq!(status.attempts[0].server_base_url, "https://studio-a.example");
+        assert_eq!(
+            status.attempts[0].server_base_url,
+            "https://studio-a.example"
+        );
         assert_eq!(status.attempts[1].state, TaskState::Running);
-        assert_eq!(status.attempts[1].server_base_url, "https://studio-b.example");
+        assert_eq!(
+            status.attempts[1].server_base_url,
+            "https://studio-b.example"
+        );
     }
 
     #[test]

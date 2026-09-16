@@ -104,7 +104,9 @@ pub enum OmniVoiceError {
     #[error("OmniVoice base URL must not contain embedded credentials")]
     EmbeddedCredentials,
 
-    #[error("OmniVoice base URL must point to the service root without query, fragment or extra path")]
+    #[error(
+        "OmniVoice base URL must point to the service root without query, fragment or extra path"
+    )]
     InvalidBasePath,
 
     #[error("OmniVoice request timed out")]
@@ -216,7 +218,8 @@ impl OmniVoiceClient {
 
         let project_import_endpoint = endpoint(&capabilities.endpoints, "project_import")?;
         let generate_project_endpoint = endpoint(&capabilities.endpoints, "generate_project")?;
-        let artifact_content_endpoint = optional_endpoint(&capabilities.endpoints, "artifact_content");
+        let artifact_content_endpoint =
+            optional_endpoint(&capabilities.endpoints, "artifact_content");
         let artifact_content_download = capabilities
             .features
             .get("artifact_content_download")
@@ -278,7 +281,8 @@ impl OmniVoiceClient {
             .json(&request)
             .send()
             .map_err(map_transport)?;
-        let payload: ImportResponse = self.decode(response, &[StatusCode::OK, StatusCode::CREATED])?;
+        let payload: ImportResponse =
+            self.decode(response, &[StatusCode::OK, StatusCode::CREATED])?;
         Ok(OmniVoiceImportResult {
             project_id: payload.project_id,
             source_hash: payload.source_hash,
@@ -377,10 +381,7 @@ struct CapabilitiesResponse {
     endpoints: HashMap<String, Value>,
 }
 
-fn endpoint(
-    endpoints: &HashMap<String, Value>,
-    name: &str,
-) -> Result<String, OmniVoiceError> {
+fn endpoint(endpoints: &HashMap<String, Value>, name: &str) -> Result<String, OmniVoiceError> {
     optional_endpoint(endpoints, name)
         .ok_or_else(|| OmniVoiceError::MissingEndpoint(name.to_owned()))
 }
@@ -447,11 +448,9 @@ mod tests {
 
     #[test]
     fn debug_redacts_bearer_token() {
-        let client = OmniVoiceClient::new(
-            "https://example.com",
-            Some("super-secret-token".to_owned()),
-        )
-        .unwrap();
+        let client =
+            OmniVoiceClient::new("https://example.com", Some("super-secret-token".to_owned()))
+                .unwrap();
         let rendered = format!("{client:?}");
         assert!(rendered.contains("<redacted>"));
         assert!(!rendered.contains("super-secret-token"));
@@ -541,10 +540,7 @@ mod tests {
         body: Vec<u8>,
     }
 
-    fn spawn_server(
-        responses: Vec<Vec<u8>>,
-        requests: Arc<Mutex<Vec<CapturedRequest>>>,
-    ) -> String {
+    fn spawn_server(responses: Vec<Vec<u8>>, requests: Arc<Mutex<Vec<CapturedRequest>>>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         thread::spawn(move || {
@@ -610,7 +606,9 @@ mod tests {
     }
 
     fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-        haystack.windows(needle.len()).position(|window| window == needle)
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
     }
 
     fn json_response(status: u16, body: &str) -> Vec<u8> {
