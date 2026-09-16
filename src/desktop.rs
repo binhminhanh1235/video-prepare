@@ -8,11 +8,12 @@ use std::{
 use eframe::egui;
 
 use crate::{
-    create_project_from_script_path, discover_projects, execute_project_run, inspect_project,
-    open_project_from_data_root, test_omnivoice_connection, test_pexels_connection,
-    ConnectionTestReport, ConnectionTestTarget, FlowRunDisposition, FlowRunReport, ProjectCatalog,
-    ProjectInspection, ProjectRunReport, QualityPreset, RunAction, RuntimeSettingsDraft,
-    RuntimeSettingsStore, StoredProject,
+    create_project_from_script_path, discover_projects, execute_flow_retry, execute_project_run,
+    inspect_project, open_project_from_data_root, test_omnivoice_connection,
+    test_pexels_connection, ConnectionTestReport, ConnectionTestTarget, FlowRetryReport,
+    FlowRunDisposition, FlowRunReport, FlowTarget, ProjectCatalog, ProjectInspection,
+    ProjectRunReport, QualityPreset, RunAction, RuntimeSettingsDraft, RuntimeSettingsStore,
+    StoredProject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +30,14 @@ struct RunWorker {
     data_root: PathBuf,
     revision: u64,
     action: RunAction,
+}
+
+struct FlowRetryWorker {
+    receiver: Receiver<Result<FlowRetryReport, String>>,
+    project_id: String,
+    data_root: PathBuf,
+    revision: u64,
+    target: FlowTarget,
 }
 
 struct ConnectionWorker {
@@ -56,6 +65,10 @@ pub struct VideoPrepareApp {
     last_run_report: Option<ProjectRunReport>,
     run_status: String,
     run_status_is_error: bool,
+    flow_retry_worker: Option<FlowRetryWorker>,
+    last_flow_retry_report: Option<FlowRetryReport>,
+    flow_retry_status: String,
+    flow_retry_status_is_error: bool,
     connection_worker: Option<ConnectionWorker>,
     last_connection_report: Option<ConnectionTestReport>,
     connection_status: String,
@@ -86,6 +99,10 @@ impl Default for VideoPrepareApp {
             last_run_report: None,
             run_status: String::new(),
             run_status_is_error: false,
+            flow_retry_worker: None,
+            last_flow_retry_report: None,
+            flow_retry_status: String::new(),
+            flow_retry_status_is_error: false,
             connection_worker: None,
             last_connection_report: None,
             connection_status: String::new(),
@@ -99,6 +116,7 @@ impl Default for VideoPrepareApp {
 impl eframe::App for VideoPrepareApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_run_worker(ctx);
+        self.poll_flow_retry_worker(ctx);
         self.poll_connection_worker(ctx);
 
         egui::TopBottomPanel::top("top-nav").show(ctx, |ui| {
@@ -119,7 +137,10 @@ impl eframe::App for VideoPrepareApp {
             Screen::Settings => self.settings_ui(ui),
         });
 
-        if self.run_worker.is_some() || self.connection_worker.is_some() {
+        if self.run_worker.is_some()
+            || self.flow_retry_worker.is_some()
+            || self.connection_worker.is_some()
+        {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
@@ -203,7 +224,7 @@ impl VideoPrepareApp {
             return;
         }
 
-        let worker_active = self.run_worker.is_some();
+        let worker_active = self.mutation_worker_active();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!worker_active, egui::Button::new("Run"))
@@ -235,6 +256,15 @@ impl VideoPrepareApp {
             ui.small(format!(
                 "{} running for `{}` with settings revision {} and Data Root {}",
                 worker.action.label(),
+                worker.project_id,
+                worker.revision,
+                worker.data_root.display()
+            ));
+        }
+        if let Some(worker) = &self.flow_retry_worker {
+            ui.small(format!(
+                "{} retry running for `{}` with settings revision {} and Data Root {}",
+                worker.target.label(),
                 worker.project_id,
                 worker.revision,
                 worker.data_root.display()
@@ -364,15 +394,13 @@ impl VideoPrepareApp {
             return;
         };
 
+        let mutation_busy = self.mutation_worker_active();
         ui.horizontal(|ui| {
             if ui.button("Back to Dashboard").clicked() {
                 self.screen = Screen::Dashboard;
             }
             if ui
-                .add_enabled(
-                    self.run_worker.is_none(),
-                    egui::Button::new("Refresh from disk"),
-                )
+                .add_enabled(!mutation_busy, egui::Button::new("Refresh from disk"))
                 .clicked()
             {
                 self.reload_selected_project();
@@ -389,6 +417,65 @@ impl VideoPrepareApp {
             state_text(scene.visual_state),
             state_text(scene.audio_state)
         ));
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.strong("Flow retry");
+            ui.small(
+                "These are project-level flow retries triggered from Scene detail. They do not imply targeted per-scene execution.",
+            );
+            ui.horizontal(|ui| {
+                let visual_retryable = retryable_flow_state(inspection.visual_flow);
+                if ui
+                    .add_enabled(
+                        !mutation_busy && visual_retryable,
+                        egui::Button::new("Retry Visual Flow"),
+                    )
+                    .clicked()
+                {
+                    self.start_flow_retry(FlowTarget::Visual);
+                }
+                let audio_retryable = retryable_flow_state(inspection.audio_flow);
+                if ui
+                    .add_enabled(
+                        !mutation_busy && audio_retryable,
+                        egui::Button::new("Retry Audio Flow"),
+                    )
+                    .clicked()
+                {
+                    self.start_flow_retry(FlowTarget::Audio);
+                }
+            });
+            if !retryable_flow_state(inspection.visual_flow) {
+                ui.small(format!(
+                    "Visual Flow is {}, so Retry Visual Flow is not applicable.",
+                    state_text(inspection.visual_flow)
+                ));
+            }
+            if !retryable_flow_state(inspection.audio_flow) {
+                ui.small(format!(
+                    "Audio Flow is {}, so Retry Audio Flow is not applicable.",
+                    state_text(inspection.audio_flow)
+                ));
+            }
+            if let Some(worker) = &self.flow_retry_worker {
+                ui.small(format!(
+                    "{} retry running with settings revision {}.",
+                    worker.target.label(),
+                    worker.revision
+                ));
+            }
+            if !self.flow_retry_status.is_empty() {
+                if self.flow_retry_status_is_error {
+                    ui.colored_label(ui.visuals().error_fg_color, &self.flow_retry_status);
+                } else {
+                    ui.label(&self.flow_retry_status);
+                }
+            }
+            if let Some(report) = &self.last_flow_retry_report {
+                render_flow_report(ui, report.target.label(), &report.flow);
+            }
+        });
 
         ui.add_space(10.0);
         ui.group(|ui| {
@@ -587,6 +674,7 @@ impl VideoPrepareApp {
             self.inspection = None;
             self.selected_scene_id = None;
             self.last_run_report = None;
+            self.last_flow_retry_report = None;
             self.refresh_projects();
         }
 
@@ -663,6 +751,9 @@ impl VideoPrepareApp {
         self.last_run_report = None;
         self.run_status.clear();
         self.run_status_is_error = false;
+        self.last_flow_retry_report = None;
+        self.flow_retry_status.clear();
+        self.flow_retry_status_is_error = false;
         self.selected_project = Some(project);
     }
 
@@ -692,8 +783,12 @@ impl VideoPrepareApp {
         }
     }
 
+    fn mutation_worker_active(&self) -> bool {
+        self.run_worker.is_some() || self.flow_retry_worker.is_some()
+    }
+
     fn start_run(&mut self, action: RunAction) {
-        if self.run_worker.is_some() {
+        if self.mutation_worker_active() {
             return;
         }
         let Some(project_id) = self
@@ -779,6 +874,98 @@ impl VideoPrepareApp {
             Err(error) => {
                 self.run_status = format!("Project run failed before flow execution: {error}");
                 self.run_status_is_error = true;
+            }
+        }
+    }
+
+    fn start_flow_retry(&mut self, target: FlowTarget) {
+        if self.mutation_worker_active() {
+            return;
+        }
+        let Some(project_id) = self
+            .selected_project
+            .as_ref()
+            .map(|project| project.metadata.project_id.clone())
+        else {
+            self.flow_retry_status = "No selected project to retry.".to_owned();
+            self.flow_retry_status_is_error = true;
+            return;
+        };
+
+        let snapshot = self.settings.current();
+        let data_root = snapshot.safe.data_root.clone();
+        let revision = snapshot.revision;
+        let worker_project_id = project_id.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = execute_flow_retry(snapshot, &worker_project_id, target)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+
+        self.flow_retry_worker = Some(FlowRetryWorker {
+            receiver,
+            project_id: project_id.clone(),
+            data_root,
+            revision,
+            target,
+        });
+        self.last_flow_retry_report = None;
+        self.flow_retry_status = format!(
+            "{} retry started for `{project_id}` with runtime settings revision {revision}.",
+            target.label()
+        );
+        self.flow_retry_status_is_error = false;
+    }
+
+    fn poll_flow_retry_worker(&mut self, ctx: &egui::Context) {
+        let outcome = match self.flow_retry_worker.as_ref() {
+            None => return,
+            Some(worker) => match worker.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(250));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => Some(Err(
+                    "flow-retry worker disconnected before returning a result".to_owned(),
+                )),
+            },
+        };
+        let Some(outcome) = outcome else {
+            return;
+        };
+
+        self.flow_retry_worker = None;
+        match outcome {
+            Ok(report) => {
+                self.flow_retry_status = format!(
+                    "{} retry finished for `{}` using settings revision {}.",
+                    report.target.label(),
+                    report.project_id,
+                    report.settings_revision
+                );
+                self.flow_retry_status_is_error = false;
+
+                let current_root = self.settings.current().safe.data_root.clone();
+                let selected_matches = self
+                    .selected_project
+                    .as_ref()
+                    .is_some_and(|project| project.metadata.project_id == report.project_id);
+                if current_root == report.data_root && selected_matches {
+                    self.reload_selected_project();
+                    self.refresh_projects();
+                } else {
+                    self.flow_retry_status.push_str(
+                        " Result persisted to its original Data Root; current selection/settings changed, so auto-refresh was skipped.",
+                    );
+                }
+                self.last_flow_retry_report = Some(report);
+            }
+            Err(error) => {
+                self.flow_retry_status =
+                    format!("Flow retry failed before flow execution: {error}");
+                self.flow_retry_status_is_error = true;
             }
         }
     }
@@ -896,6 +1083,16 @@ fn state_text(state: crate::TaskState) -> &'static str {
         crate::TaskState::Interrupted => "INTERRUPTED",
         crate::TaskState::UnknownRemote => "UNKNOWN_REMOTE",
     }
+}
+
+fn retryable_flow_state(state: crate::TaskState) -> bool {
+    matches!(
+        state,
+        crate::TaskState::Failed
+            | crate::TaskState::Partial
+            | crate::TaskState::Interrupted
+            | crate::TaskState::UnknownRemote
+    )
 }
 
 fn render_flow_report(ui: &mut egui::Ui, label: &str, report: &FlowRunReport) {
