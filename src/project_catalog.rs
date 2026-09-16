@@ -1,4 +1,7 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use thiserror::Error;
 
@@ -67,7 +70,9 @@ pub enum ProjectCatalogError {
     },
 }
 
-pub fn discover_projects(data_root: impl AsRef<Path>) -> Result<ProjectCatalog, ProjectCatalogError> {
+pub fn discover_projects(
+    data_root: impl AsRef<Path>,
+) -> Result<ProjectCatalog, ProjectCatalogError> {
     let projects_root = data_root.as_ref().join("projects");
     if !projects_root.exists() {
         return Ok(ProjectCatalog::default());
@@ -92,10 +97,12 @@ pub fn discover_projects(data_root: impl AsRef<Path>) -> Result<ProjectCatalog, 
         if name.starts_with('.') {
             continue;
         }
-        let file_type = entry.file_type().map_err(|source| ProjectCatalogError::ReadFileType {
-            path: path.clone(),
-            source,
-        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|source| ProjectCatalogError::ReadFileType {
+                path: path.clone(),
+                source,
+            })?;
         if !file_type.is_dir() {
             continue;
         }
@@ -115,7 +122,9 @@ pub fn discover_projects(data_root: impl AsRef<Path>) -> Result<ProjectCatalog, 
             .cmp(&left.created_unix_ms)
             .then_with(|| left.project_id.cmp(&right.project_id))
     });
-    catalog.errors.sort_by(|left, right| left.root.cmp(&right.root));
+    catalog
+        .errors
+        .sort_by(|left, right| left.root.cmp(&right.root));
     Ok(catalog)
 }
 
