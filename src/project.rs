@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use thiserror::Error;
 
@@ -33,7 +33,7 @@ pub struct ProjectMetadata {
     pub project_id: String,
     pub title: String,
     pub input_sha256: String,
-    pub created_unix_ms: u128,
+    pub created_unix_ms: u64,
     pub scene_ids: Vec<String>,
 }
 
@@ -56,21 +56,23 @@ pub struct ProjectStatus {
 
 impl ProjectStatus {
     fn initial(project_id: &str, prepared: &PreparedScript) -> Self {
+        let scenes = prepared
+            .scenes
+            .iter()
+            .map(|scene| SceneRuntimeStatus {
+                id: scene.id.clone(),
+                visual: TaskState::Pending,
+                audio: TaskState::Pending,
+            })
+            .collect();
+
         Self {
             schema_version: STATUS_SCHEMA_VERSION,
             project_id: project_id.to_owned(),
             overall: TaskState::Pending,
             visual_flow: TaskState::Pending,
             audio_flow: TaskState::Pending,
-            scenes: prepared
-                .scenes
-                .iter()
-                .map(|scene| SceneRuntimeStatus {
-                    id: scene.id.clone(),
-                    visual: TaskState::Pending,
-                    audio: TaskState::Pending,
-                })
-                .collect(),
+            scenes,
         }
     }
 }
@@ -148,16 +150,12 @@ impl ProjectStore {
     ) -> Result<StoredProject, ProjectError> {
         validate_project_id(project_id)?;
 
-        let parsed = parse_script(raw_script)?;
-        if &parsed != prepared {
+        if parse_script(raw_script)? != *prepared {
             return Err(ProjectError::PreparedScriptMismatch);
         }
 
         let projects_root = self.projects_root();
-        fs::create_dir_all(&projects_root).map_err(|source| ProjectError::Io {
-            path: projects_root.clone(),
-            source,
-        })?;
+        create_dir_all(&projects_root)?;
 
         let project_root = projects_root.join(project_id);
         if project_root.exists() {
@@ -169,13 +167,9 @@ impl ProjectStore {
             std::process::id(),
             now_nanos()
         ));
-        fs::create_dir(&staging).map_err(|source| ProjectError::Io {
-            path: staging.clone(),
-            source,
-        })?;
+        create_dir(&staging)?;
 
-        let result = self.create_in_staging(project_id, raw_script, prepared, &staging);
-        if let Err(error) = result {
+        if let Err(error) = create_project_files(project_id, raw_script, prepared, &staging) {
             let _ = fs::remove_dir_all(&staging);
             return Err(error);
         }
@@ -188,135 +182,33 @@ impl ProjectStore {
         Self::open(&project_root)
     }
 
-    fn create_in_staging(
-        &self,
-        project_id: &str,
-        raw_script: &str,
-        prepared: &PreparedScript,
-        staging: &Path,
-    ) -> Result<(), ProjectError> {
-        let input_dir = staging.join("input");
-        let audio_dir = staging.join("audio").join("artifacts");
-        let logs_dir = staging.join("logs");
-        fs::create_dir_all(&input_dir).map_err(|source| ProjectError::Io {
-            path: input_dir.clone(),
-            source,
-        })?;
-        fs::create_dir_all(&audio_dir).map_err(|source| ProjectError::Io {
-            path: audio_dir.clone(),
-            source,
-        })?;
-        fs::create_dir_all(&logs_dir).map_err(|source| ProjectError::Io {
-            path: logs_dir.clone(),
-            source,
-        })?;
-
-        for scene in &prepared.scenes {
-            let scene_root = staging.join("scenes").join(&scene.id);
-            for media_dir in ["images", "videos"] {
-                let path = scene_root.join(media_dir);
-                fs::create_dir_all(&path).map_err(|source| ProjectError::Io {
-                    path: path.clone(),
-                    source,
-                })?;
-            }
-        }
-
-        let snapshot = input_dir.join("script.vprep");
-        write_new_bytes(&snapshot, raw_script.as_bytes())?;
-
-        let metadata = ProjectMetadata {
-            schema_version: PROJECT_SCHEMA_VERSION,
-            project_id: project_id.to_owned(),
-            title: prepared.omnivoice.title.clone(),
-            input_sha256: prepared.input_sha256.clone(),
-            created_unix_ms: now_millis(),
-            scene_ids: prepared.scenes.iter().map(|scene| scene.id.clone()).collect(),
-        };
-        let status = ProjectStatus::initial(project_id, prepared);
-
-        atomic_write_json(&staging.join("project.json"), &metadata)?;
-        atomic_write_json(&staging.join("status.json"), &status)?;
-        Ok(())
-    }
-
     pub fn load(&self, project_id: &str) -> Result<StoredProject, ProjectError> {
         validate_project_id(project_id)?;
-        Self::open(&self.projects_root().join(project_id))
+        Self::open(self.projects_root().join(project_id))
     }
 
     pub fn open(project_root: impl AsRef<Path>) -> Result<StoredProject, ProjectError> {
         let project_root = project_root.as_ref().to_path_buf();
         let project_json = project_root.join("project.json");
         let status_json = project_root.join("status.json");
-        let snapshot = project_root.join("input").join("script.vprep");
+        let snapshot = project_root.join("input/script.vprep");
 
         if !project_json.is_file() || !status_json.is_file() || !snapshot.is_file() {
             return Err(ProjectError::ProjectMissing(project_root));
         }
 
         let metadata: ProjectMetadata = read_json(&project_json)?;
-        validate_project_id(&metadata.project_id)?;
-        if metadata.schema_version != PROJECT_SCHEMA_VERSION {
-            return Err(ProjectError::MetadataMismatch(format!(
-                "unsupported schema_version {}",
-                metadata.schema_version
-            )));
-        }
-
-        let folder_name = project_root.file_name().and_then(|name| name.to_str());
-        if folder_name != Some(metadata.project_id.as_str()) {
-            return Err(ProjectError::MetadataMismatch(
-                "folder name does not match project_id".to_owned(),
-            ));
-        }
+        validate_metadata(&project_root, &metadata)?;
 
         let status: ProjectStatus = read_json(&status_json)?;
-        if status.schema_version != STATUS_SCHEMA_VERSION {
-            return Err(ProjectError::StatusMismatch(format!(
-                "unsupported schema_version {}",
-                status.schema_version
-            )));
-        }
-        if status.project_id != metadata.project_id {
-            return Err(ProjectError::StatusMismatch(
-                "status project_id does not match metadata".to_owned(),
-            ));
-        }
+        validate_status(&metadata, &status)?;
 
         let raw_script = fs::read_to_string(&snapshot).map_err(|source| ProjectError::Io {
-            path: snapshot.clone(),
+            path: snapshot,
             source,
         })?;
         let prepared_script = parse_script(&raw_script)?;
-        if prepared_script.input_sha256 != metadata.input_sha256 {
-            return Err(ProjectError::InputHashMismatch {
-                expected: metadata.input_sha256.clone(),
-                actual: prepared_script.input_sha256.clone(),
-            });
-        }
-        if prepared_script.omnivoice.title != metadata.title {
-            return Err(ProjectError::MetadataMismatch(
-                "title does not match input snapshot".to_owned(),
-            ));
-        }
-        let scene_ids: Vec<String> = prepared_script
-            .scenes
-            .iter()
-            .map(|scene| scene.id.clone())
-            .collect();
-        if scene_ids != metadata.scene_ids {
-            return Err(ProjectError::MetadataMismatch(
-                "scene_ids do not match input snapshot".to_owned(),
-            ));
-        }
-        let status_scene_ids: Vec<&str> = status.scenes.iter().map(|scene| scene.id.as_str()).collect();
-        let metadata_scene_ids: Vec<&str> = metadata.scene_ids.iter().map(String::as_str).collect();
-        if status_scene_ids != metadata_scene_ids {
-            return Err(ProjectError::StatusMismatch(
-                "status scenes do not match metadata scene_ids".to_owned(),
-            ));
-        }
+        validate_snapshot(&metadata, &prepared_script)?;
 
         Ok(StoredProject {
             root: project_root,
@@ -332,20 +224,112 @@ impl ProjectStore {
     ) -> Result<(), ProjectError> {
         let project_root = project_root.as_ref();
         let metadata: ProjectMetadata = read_json(&project_root.join("project.json"))?;
-        if status.project_id != metadata.project_id {
-            return Err(ProjectError::StatusMismatch(
-                "status project_id does not match metadata".to_owned(),
-            ));
-        }
-        let status_scene_ids: Vec<&str> = status.scenes.iter().map(|scene| scene.id.as_str()).collect();
-        let metadata_scene_ids: Vec<&str> = metadata.scene_ids.iter().map(String::as_str).collect();
-        if status_scene_ids != metadata_scene_ids {
-            return Err(ProjectError::StatusMismatch(
-                "status scenes do not match metadata scene_ids".to_owned(),
-            ));
-        }
+        validate_status(&metadata, status)?;
         atomic_write_json(&project_root.join("status.json"), status)
     }
+}
+
+fn create_project_files(
+    project_id: &str,
+    raw_script: &str,
+    prepared: &PreparedScript,
+    staging: &Path,
+) -> Result<(), ProjectError> {
+    create_dir_all(&staging.join("input"))?;
+    create_dir_all(&staging.join("audio/artifacts"))?;
+    create_dir_all(&staging.join("logs"))?;
+
+    for scene in &prepared.scenes {
+        create_dir_all(&staging.join("scenes").join(&scene.id).join("images"))?;
+        create_dir_all(&staging.join("scenes").join(&scene.id).join("videos"))?;
+    }
+
+    write_new_bytes(&staging.join("input/script.vprep"), raw_script.as_bytes())?;
+
+    let metadata = ProjectMetadata {
+        schema_version: PROJECT_SCHEMA_VERSION,
+        project_id: project_id.to_owned(),
+        title: prepared.omnivoice.title.clone(),
+        input_sha256: prepared.input_sha256.clone(),
+        created_unix_ms: now_millis(),
+        scene_ids: prepared
+            .scenes
+            .iter()
+            .map(|scene| scene.id.clone())
+            .collect(),
+    };
+    let status = ProjectStatus::initial(project_id, prepared);
+
+    atomic_write_json(&staging.join("project.json"), &metadata)?;
+    atomic_write_json(&staging.join("status.json"), &status)
+}
+
+fn validate_metadata(root: &Path, metadata: &ProjectMetadata) -> Result<(), ProjectError> {
+    validate_project_id(&metadata.project_id)?;
+    if metadata.schema_version != PROJECT_SCHEMA_VERSION {
+        return Err(ProjectError::MetadataMismatch(format!(
+            "unsupported schema_version {}",
+            metadata.schema_version
+        )));
+    }
+    if root.file_name().and_then(|value| value.to_str()) != Some(metadata.project_id.as_str()) {
+        return Err(ProjectError::MetadataMismatch(
+            "folder name does not match project_id".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_status(
+    metadata: &ProjectMetadata,
+    status: &ProjectStatus,
+) -> Result<(), ProjectError> {
+    if status.schema_version != STATUS_SCHEMA_VERSION {
+        return Err(ProjectError::StatusMismatch(format!(
+            "unsupported schema_version {}",
+            status.schema_version
+        )));
+    }
+    if status.project_id != metadata.project_id {
+        return Err(ProjectError::StatusMismatch(
+            "status project_id does not match metadata".to_owned(),
+        ));
+    }
+
+    let status_ids: Vec<&str> = status.scenes.iter().map(|scene| scene.id.as_str()).collect();
+    let metadata_ids: Vec<&str> = metadata.scene_ids.iter().map(String::as_str).collect();
+    if status_ids != metadata_ids {
+        return Err(ProjectError::StatusMismatch(
+            "status scenes do not match metadata scene_ids".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_snapshot(
+    metadata: &ProjectMetadata,
+    prepared: &PreparedScript,
+) -> Result<(), ProjectError> {
+    if prepared.input_sha256 != metadata.input_sha256 {
+        return Err(ProjectError::InputHashMismatch {
+            expected: metadata.input_sha256.clone(),
+            actual: prepared.input_sha256.clone(),
+        });
+    }
+    if prepared.omnivoice.title != metadata.title {
+        return Err(ProjectError::MetadataMismatch(
+            "title does not match input snapshot".to_owned(),
+        ));
+    }
+
+    let scene_ids: Vec<&str> = prepared.scenes.iter().map(|scene| scene.id.as_str()).collect();
+    let metadata_ids: Vec<&str> = metadata.scene_ids.iter().map(String::as_str).collect();
+    if scene_ids != metadata_ids {
+        return Err(ProjectError::MetadataMismatch(
+            "scene_ids do not match input snapshot".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_project_id(project_id: &str) -> Result<(), ProjectError> {
@@ -359,10 +343,10 @@ fn validate_project_id(project_id: &str) -> Result<(), ProjectError> {
         && project_id
             .chars()
             .next()
-            .is_some_and(|ch| ch.is_ascii_alphanumeric())
+            .is_some_and(|value| value.is_ascii_alphanumeric())
         && project_id
             .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'));
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.'));
 
     if valid {
         Ok(())
@@ -371,7 +355,21 @@ fn validate_project_id(project_id: &str) -> Result<(), ProjectError> {
     }
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProjectError> {
+fn create_dir(path: &Path) -> Result<(), ProjectError> {
+    fs::create_dir(path).map_err(|source| ProjectError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn create_dir_all(path: &Path) -> Result<(), ProjectError> {
+    fs::create_dir_all(path).map_err(|source| ProjectError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, ProjectError> {
     let bytes = fs::read(path).map_err(|source| ProjectError::Io {
         path: path.to_path_buf(),
         source,
@@ -414,21 +412,20 @@ where
     T: Serialize,
     F: FnOnce(&Path) -> std::io::Result<()>,
 {
-    let parent = path.parent().ok_or_else(|| ProjectError::MetadataMismatch(
-        "atomic write target has no parent directory".to_owned(),
-    ))?;
-    fs::create_dir_all(parent).map_err(|source| ProjectError::Io {
-        path: parent.to_path_buf(),
-        source,
+    let parent = path.parent().ok_or_else(|| {
+        ProjectError::MetadataMismatch("atomic write target has no parent directory".to_owned())
     })?;
+    create_dir_all(parent)?;
 
     let mut temp = NamedTempFile::new_in(parent).map_err(|source| ProjectError::Io {
         path: parent.to_path_buf(),
         source,
     })?;
-    serde_json::to_writer_pretty(temp.as_file_mut(), value).map_err(|error| ProjectError::Json {
-        path: path.to_path_buf(),
-        message: error.to_string(),
+    serde_json::to_writer_pretty(temp.as_file_mut(), value).map_err(|error| {
+        ProjectError::Json {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }
     })?;
     temp.as_file_mut()
         .write_all(b"\n")
@@ -436,16 +433,17 @@ where
             path: path.to_path_buf(),
             source,
         })?;
-    temp.as_file_mut().sync_all().map_err(|source| ProjectError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    temp.as_file_mut()
+        .sync_all()
+        .map_err(|source| ProjectError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
 
     before_persist(temp.path()).map_err(|source| ProjectError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-
     temp.persist(path).map_err(|error| ProjectError::Io {
         path: path.to_path_buf(),
         source: error.error,
@@ -453,11 +451,23 @@ where
     Ok(())
 }
 
-fn now_millis() -> u128 {
+#[doc(hidden)]
+pub fn test_atomic_status_write_failure(
+    project_root: &Path,
+    status: &ProjectStatus,
+) -> Result<(), ProjectError> {
+    atomic_write_json_with_hook(&project_root.join("status.json"), status, |_| {
+        Err(std::io::Error::other("injected pre-persist failure"))
+    })
+}
+
+fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 fn now_nanos() -> u128 {
@@ -465,152 +475,4 @@ fn now_nanos() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const DEMO: &str = include_str!("../examples/demo.vprep");
-
-    fn temp_data_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "video-prepare-test-{}-{}",
-            std::process::id(),
-            now_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        root
-    }
-
-    #[test]
-    fn create_persist_and_reopen_project() {
-        let data_root = temp_data_root();
-        let prepared = parse_script(DEMO).unwrap();
-        let store = ProjectStore::new(&data_root);
-        let created = store.create("demo-project", DEMO, &prepared).unwrap();
-
-        assert_eq!(created.metadata.project_id, "demo-project");
-        assert_eq!(created.metadata.input_sha256, prepared.input_sha256);
-        assert_eq!(created.status.overall, TaskState::Pending);
-        assert_eq!(
-            fs::read_to_string(created.root.join("input/script.vprep")).unwrap(),
-            DEMO
-        );
-        for scene in ["S01", "S02", "S03"] {
-            assert!(created.root.join("scenes").join(scene).join("images").is_dir());
-            assert!(created.root.join("scenes").join(scene).join("videos").is_dir());
-        }
-
-        drop(created);
-        let reopened = store.load("demo-project").unwrap();
-        assert_eq!(reopened.prepared_script, prepared);
-        assert_eq!(reopened.metadata.scene_ids, vec!["S01", "S02", "S03"]);
-
-        fs::remove_dir_all(data_root).unwrap();
-    }
-
-    #[test]
-    fn rejects_path_traversal_project_ids() {
-        let data_root = temp_data_root();
-        let prepared = parse_script(DEMO).unwrap();
-        let store = ProjectStore::new(&data_root);
-
-        for id in ["../foo", "foo/bar", "foo\\bar", ".", "..", " bad"] {
-            assert!(matches!(
-                store.create(id, DEMO, &prepared),
-                Err(ProjectError::InvalidProjectId(_))
-            ));
-        }
-
-        fs::remove_dir_all(data_root).unwrap();
-    }
-
-    #[test]
-    fn detects_modified_input_snapshot() {
-        let data_root = temp_data_root();
-        let prepared = parse_script(DEMO).unwrap();
-        let store = ProjectStore::new(&data_root);
-        let project = store.create("demo", DEMO, &prepared).unwrap();
-        let snapshot = project.root.join("input/script.vprep");
-        fs::write(&snapshot, DEMO.replace("Silence Is Powerful", "Silence Changed")).unwrap();
-
-        assert!(matches!(
-            ProjectStore::open(&project.root),
-            Err(ProjectError::InputHashMismatch { .. })
-        ));
-
-        fs::remove_dir_all(data_root).unwrap();
-    }
-
-    #[test]
-    fn detects_missing_input_snapshot() {
-        let data_root = temp_data_root();
-        let prepared = parse_script(DEMO).unwrap();
-        let store = ProjectStore::new(&data_root);
-        let project = store.create("demo", DEMO, &prepared).unwrap();
-        fs::remove_file(project.root.join("input/script.vprep")).unwrap();
-
-        assert!(matches!(
-            ProjectStore::open(&project.root),
-            Err(ProjectError::ProjectMissing(_))
-        ));
-
-        fs::remove_dir_all(data_root).unwrap();
-    }
-
-    #[test]
-    fn atomic_write_keeps_old_status_if_failure_happens_before_persist() {
-        let data_root = temp_data_root();
-        let prepared = parse_script(DEMO).unwrap();
-        let store = ProjectStore::new(&data_root);
-        let project = store.create("demo", DEMO, &prepared).unwrap();
-        let status_path = project.root.join("status.json");
-        let before = fs::read(&status_path).unwrap();
-
-        let mut changed = project.status.clone();
-        changed.overall = TaskState::Running;
-        let result = atomic_write_json_with_hook(&status_path, &changed, |_| {
-            Err(std::io::Error::other("injected pre-persist failure"))
-        });
-        assert!(result.is_err());
-        assert_eq!(fs::read(&status_path).unwrap(), before);
-
-        fs::remove_dir_all(data_root).unwrap();
-    }
-
-    #[test]
-    fn save_and_reopen_updated_status() {
-        let data_root = temp_data_root();
-        let prepared = parse_script(DEMO).unwrap();
-        let store = ProjectStore::new(&data_root);
-        let project = store.create("demo", DEMO, &prepared).unwrap();
-        let mut status = project.status.clone();
-        status.overall = TaskState::Running;
-        status.visual_flow = TaskState::Running;
-        status.scenes[0].visual = TaskState::Completed;
-
-        ProjectStore::save_status(&project.root, &status).unwrap();
-        let reopened = ProjectStore::open(&project.root).unwrap();
-        assert_eq!(reopened.status, status);
-
-        fs::remove_dir_all(data_root).unwrap();
-    }
-
-    #[test]
-    fn project_files_do_not_contain_runtime_secrets() {
-        let data_root = temp_data_root();
-        let prepared = parse_script(DEMO).unwrap();
-        let store = ProjectStore::new(&data_root);
-        let project = store.create("demo", DEMO, &prepared).unwrap();
-        let project_json = fs::read_to_string(project.root.join("project.json")).unwrap();
-        let status_json = fs::read_to_string(project.root.join("status.json")).unwrap();
-
-        for forbidden in ["pexels_api_key", "omnivoice_token", "omnivoice_url"] {
-            assert!(!project_json.contains(forbidden));
-            assert!(!status_json.contains(forbidden));
-        }
-
-        fs::remove_dir_all(data_root).unwrap();
-    }
 }
