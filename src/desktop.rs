@@ -353,7 +353,10 @@ impl VideoPrepareApp {
                 self.screen = Screen::Dashboard;
             }
             if ui
-                .add_enabled(self.run_worker.is_none(), egui::Button::new("Refresh from disk"))
+                .add_enabled(
+                    self.run_worker.is_none(),
+                    egui::Button::new("Refresh from disk"),
+                )
                 .clicked()
             {
                 self.reload_selected_project();
