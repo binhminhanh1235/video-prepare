@@ -149,7 +149,9 @@ impl OmniVoiceArtifactProvider for OmniVoiceClient {
         let mut total = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
-            let read = response.read(&mut buffer).map_err(|_| OmniVoiceError::Transport)?;
+            let read = response
+                .read(&mut buffer)
+                .map_err(|_| OmniVoiceError::Transport)?;
             if read == 0 {
                 break;
             }
@@ -251,7 +253,9 @@ pub fn verify_local_artifact(path: &Path, expected_sha256: &str) -> Result<u64, 
     let mut total = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buffer).map_err(|_| OmniVoiceError::Transport)?;
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| OmniVoiceError::Transport)?;
         if read == 0 {
             break;
         }
