@@ -22,17 +22,18 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Apply artifact transport accessors once
+      - name: Apply staged P3 audio artifact patches once
         if: github.event_name == 'push' && github.ref == 'refs/heads/feat/p3-audio-artifact-import'
         shell: bash
         run: |
           python3 scripts/p3_artifact_accessor_patch.py
+          python3 scripts/p3_audio_visibility_patch.py
           cargo fmt --all
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src
           if ! git diff --cached --quiet; then
-            git commit -m "refactor: share authenticated OmniVoice transport internally"
+            git commit -m "refactor: wire P3 audio artifact persistence internals"
             git push origin HEAD:feat/p3-audio-artifact-import
           fi
 
