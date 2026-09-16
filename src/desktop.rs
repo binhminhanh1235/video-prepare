@@ -1,6 +1,11 @@
+use std::path::PathBuf;
+
 use eframe::egui;
 
-use crate::{QualityPreset, RuntimeSettingsDraft, RuntimeSettingsStore};
+use crate::{
+    create_project_from_script_path, discover_projects, open_project_from_data_root,
+    ProjectCatalog, QualityPreset, RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -16,19 +21,36 @@ pub struct VideoPrepareApp {
     screen: Screen,
     status: String,
     status_is_error: bool,
+    catalog: ProjectCatalog,
+    catalog_data_root: PathBuf,
+    selected_project: Option<StoredProject>,
+    create_project_id: String,
+    create_script_path: String,
+    project_status: String,
+    project_status_is_error: bool,
 }
 
 impl Default for VideoPrepareApp {
     fn default() -> Self {
         let settings = RuntimeSettingsStore::default();
         let draft = settings.draft();
-        Self {
+        let catalog_data_root = settings.current().safe.data_root.clone();
+        let mut app = Self {
             settings,
             draft,
-            screen: Screen::Settings,
+            screen: Screen::Projects,
             status: "Runtime settings are memory-only until applied.".to_owned(),
             status_is_error: false,
-        }
+            catalog: ProjectCatalog::default(),
+            catalog_data_root,
+            selected_project: None,
+            create_project_id: String::new(),
+            create_script_path: String::new(),
+            project_status: String::new(),
+            project_status_is_error: false,
+        };
+        app.refresh_projects();
+        app
     }
 }
 
@@ -46,20 +68,12 @@ impl eframe::App for VideoPrepareApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.screen {
-            Screen::Projects => placeholder(
-                ui,
-                "Project list",
-                "Project create/open wiring starts in P4.02.",
-            ),
-            Screen::Dashboard => placeholder(
-                ui,
-                "Project dashboard",
-                "Run, Resume and Retry actions are not wired in P4.01.",
-            ),
+            Screen::Projects => self.projects_ui(ui),
+            Screen::Dashboard => self.dashboard_ui(ui),
             Screen::Scene => placeholder(
                 ui,
                 "Scene detail",
-                "Scene-level assets, audio attempts and retry controls are not wired in P4.01.",
+                "Scene-level assets, audio attempts and retry controls are not wired yet.",
             ),
             Screen::Settings => self.settings_ui(ui),
         });
@@ -67,6 +81,94 @@ impl eframe::App for VideoPrepareApp {
 }
 
 impl VideoPrepareApp {
+    fn projects_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Projects");
+        ui.horizontal(|ui| {
+            ui.label(format!("Data Root: {}", self.catalog_data_root.display()));
+            if ui.button("Refresh").clicked() {
+                self.refresh_projects();
+            }
+        });
+        ui.add_space(8.0);
+
+        ui.group(|ui| {
+            ui.strong("Create from script");
+            field(ui, "Project ID", &mut self.create_project_id);
+            field(ui, "Script .vprep", &mut self.create_script_path);
+            if ui.button("Create Project").clicked() {
+                self.create_project_from_script();
+            }
+        });
+
+        if !self.project_status.is_empty() {
+            ui.add_space(6.0);
+            if self.project_status_is_error {
+                ui.colored_label(ui.visuals().error_fg_color, &self.project_status);
+            } else {
+                ui.label(&self.project_status);
+            }
+        }
+
+        ui.add_space(10.0);
+        if self.catalog.projects.is_empty() {
+            ui.label("No valid projects found in this Data Root.");
+        } else {
+            ui.strong(format!("Projects ({})", self.catalog.projects.len()));
+            let projects = self.catalog.projects.clone();
+            for project in projects {
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.strong(&project.title);
+                            ui.label(format!("id: {}", project.project_id));
+                            ui.label(format!(
+                                "overall: {:?} | visual: {:?} | audio: {:?}",
+                                project.overall, project.visual_flow, project.audio_flow
+                            ));
+                            ui.small(format!("scenes: {}", project.scene_count));
+                        });
+                        if ui.button("Open").clicked() {
+                            self.open_project(&project.project_id);
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+            }
+        }
+
+        if !self.catalog.errors.is_empty() {
+            ui.add_space(10.0);
+            ui.strong("Incomplete / unreadable project folders");
+            for error in self.catalog.errors.clone() {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!("{}: {}", error.root.display(), error.message),
+                );
+            }
+        }
+    }
+
+    fn dashboard_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Project dashboard");
+        let Some(project) = self.selected_project.as_ref() else {
+            ui.label("No project selected. Open a project from Projects first.");
+            if ui.button("Go to Projects").clicked() {
+                self.screen = Screen::Projects;
+            }
+            return;
+        };
+
+        ui.strong(&project.metadata.title);
+        ui.label(format!("Project ID: {}", project.metadata.project_id));
+        ui.label(format!("Root: {}", project.root.display()));
+        ui.label(format!("Overall: {:?}", project.status.overall));
+        ui.label(format!("Visual Flow: {:?}", project.status.visual_flow));
+        ui.label(format!("Audio Flow: {:?}", project.status.audio_flow));
+        ui.label(format!("Scenes: {}", project.status.scenes.len()));
+        ui.add_space(8.0);
+        ui.label("Run, Resume and Retry orchestration is intentionally not wired in P4.02.");
+    }
+
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Runtime Settings");
         ui.label(format!(
@@ -133,6 +235,7 @@ impl VideoPrepareApp {
         });
 
         ui.add_space(10.0);
+        let mut refresh_catalog = false;
         ui.horizontal(|ui| {
             if ui.button("Cancel").clicked() {
                 self.draft = self.settings.draft();
@@ -140,12 +243,14 @@ impl VideoPrepareApp {
                 self.status_is_error = false;
             }
             if ui.button("Apply").clicked() {
+                let previous_root = self.settings.current().safe.data_root.clone();
                 match self.settings.apply(&self.draft) {
                     Ok(snapshot) => {
                         self.draft = RuntimeSettingsDraft::from_snapshot(&snapshot);
                         self.status =
                             format!("Applied runtime settings revision {}.", snapshot.revision);
                         self.status_is_error = false;
+                        refresh_catalog = previous_root != snapshot.safe.data_root;
                     }
                     Err(error) => {
                         self.status = error.to_string();
@@ -154,12 +259,75 @@ impl VideoPrepareApp {
                 }
             }
         });
+        if refresh_catalog {
+            self.selected_project = None;
+            self.refresh_projects();
+        }
 
         ui.add_space(8.0);
         if self.status_is_error {
             ui.colored_label(ui.visuals().error_fg_color, &self.status);
         } else {
             ui.label(&self.status);
+        }
+    }
+
+    fn refresh_projects(&mut self) {
+        let data_root = self.settings.current().safe.data_root.clone();
+        self.catalog_data_root = data_root.clone();
+        match discover_projects(&data_root) {
+            Ok(catalog) => {
+                self.catalog = catalog;
+                self.project_status = format!(
+                    "Loaded {} project(s), {} discovery error(s).",
+                    self.catalog.projects.len(),
+                    self.catalog.errors.len()
+                );
+                self.project_status_is_error = false;
+            }
+            Err(error) => {
+                self.catalog = ProjectCatalog::default();
+                self.project_status = error.to_string();
+                self.project_status_is_error = true;
+            }
+        }
+    }
+
+    fn create_project_from_script(&mut self) {
+        let project_id = self.create_project_id.trim().to_owned();
+        let script_path = self.create_script_path.trim().to_owned();
+        let data_root = self.settings.current().safe.data_root.clone();
+        match create_project_from_script_path(&data_root, &project_id, &script_path) {
+            Ok(project) => {
+                self.project_status = format!("Created project `{}`.", project.metadata.project_id);
+                self.project_status_is_error = false;
+                self.create_project_id.clear();
+                self.create_script_path.clear();
+                self.selected_project = Some(project);
+                self.refresh_projects();
+                self.screen = Screen::Dashboard;
+            }
+            Err(error) => {
+                self.project_status = format!("Project create failed: {error}");
+                self.project_status_is_error = true;
+            }
+        }
+    }
+
+    fn open_project(&mut self, project_id: &str) {
+        let data_root = self.settings.current().safe.data_root.clone();
+        match open_project_from_data_root(&data_root, project_id) {
+            Ok(project) => {
+                self.project_status = format!("Opened project `{project_id}`.");
+                self.project_status_is_error = false;
+                self.selected_project = Some(project);
+                self.screen = Screen::Dashboard;
+            }
+            Err(error) => {
+                self.project_status = format!("Project open failed: {error}");
+                self.project_status_is_error = true;
+                self.refresh_projects();
+            }
         }
     }
 }
