@@ -2,6 +2,7 @@ pub mod audio;
 pub mod audio_artifacts;
 pub mod desktop;
 pub mod inspection;
+pub mod orchestration;
 pub mod project;
 pub mod project_catalog;
 pub mod providers;
@@ -23,6 +24,10 @@ pub use desktop::{run_desktop, VideoPrepareApp};
 pub use inspection::{
     inspect_project, AudioAttemptInspection, AudioInspection, InspectionProblem, ProjectInspection,
     SceneInspection, VisualRequestInspection,
+};
+pub use orchestration::{
+    execute_project_run, plan_audio_next_step, AudioNextStep, FlowRunDisposition, FlowRunReport,
+    ProjectRunReport, RunAction,
 };
 pub use project::{
     ProjectError, ProjectMetadata, ProjectStatus, ProjectStore, SceneRuntimeStatus, StoredProject,

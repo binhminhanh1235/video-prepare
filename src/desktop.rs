@@ -1,11 +1,17 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::mpsc::{self, Receiver, TryRecvError},
+    thread,
+    time::Duration,
+};
 
 use eframe::egui;
 
 use crate::{
-    create_project_from_script_path, discover_projects, inspect_project,
-    open_project_from_data_root, ProjectCatalog, ProjectInspection, QualityPreset,
-    RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
+    create_project_from_script_path, discover_projects, execute_project_run, inspect_project,
+    open_project_from_data_root, FlowRunDisposition, FlowRunReport, ProjectCatalog,
+    ProjectInspection, ProjectRunReport, QualityPreset, RunAction, RuntimeSettingsDraft,
+    RuntimeSettingsStore, StoredProject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +20,14 @@ enum Screen {
     Dashboard,
     Scene,
     Settings,
+}
+
+struct RunWorker {
+    receiver: Receiver<Result<ProjectRunReport, String>>,
+    project_id: String,
+    data_root: PathBuf,
+    revision: u64,
+    action: RunAction,
 }
 
 pub struct VideoPrepareApp {
@@ -31,6 +45,10 @@ pub struct VideoPrepareApp {
     create_script_path: String,
     project_status: String,
     project_status_is_error: bool,
+    run_worker: Option<RunWorker>,
+    last_run_report: Option<ProjectRunReport>,
+    run_status: String,
+    run_status_is_error: bool,
 }
 
 impl Default for VideoPrepareApp {
@@ -53,6 +71,10 @@ impl Default for VideoPrepareApp {
             create_script_path: String::new(),
             project_status: String::new(),
             project_status_is_error: false,
+            run_worker: None,
+            last_run_report: None,
+            run_status: String::new(),
+            run_status_is_error: false,
         };
         app.refresh_projects();
         app
@@ -61,6 +83,8 @@ impl Default for VideoPrepareApp {
 
 impl eframe::App for VideoPrepareApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_run_worker(ctx);
+
         egui::TopBottomPanel::top("top-nav").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Video Prepare");
@@ -78,6 +102,10 @@ impl eframe::App for VideoPrepareApp {
             Screen::Scene => self.scene_detail_ui(ui),
             Screen::Settings => self.settings_ui(ui),
         });
+
+        if self.run_worker.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
     }
 }
 
@@ -159,12 +187,61 @@ impl VideoPrepareApp {
             return;
         }
 
+        let worker_active = self.run_worker.is_some();
         ui.horizontal(|ui| {
-            if ui.button("Refresh from disk").clicked() {
+            if ui
+                .add_enabled(!worker_active, egui::Button::new("Run"))
+                .clicked()
+            {
+                self.start_run(RunAction::Run);
+            }
+            if ui
+                .add_enabled(!worker_active, egui::Button::new("Resume"))
+                .clicked()
+            {
+                self.start_run(RunAction::Resume);
+            }
+            if ui
+                .add_enabled(!worker_active, egui::Button::new("Retry Failed"))
+                .clicked()
+            {
+                self.start_run(RunAction::RetryFailed);
+            }
+            if ui
+                .add_enabled(!worker_active, egui::Button::new("Refresh from disk"))
+                .clicked()
+            {
                 self.reload_selected_project();
             }
-            ui.small("Read-only inspection. Run/Resume/Retry is wired in P4.04.");
         });
+
+        if let Some(worker) = &self.run_worker {
+            ui.small(format!(
+                "{} running for `{}` with settings revision {} and Data Root {}",
+                worker.action.label(),
+                worker.project_id,
+                worker.revision,
+                worker.data_root.display()
+            ));
+        }
+        if !self.run_status.is_empty() {
+            if self.run_status_is_error {
+                ui.colored_label(ui.visuals().error_fg_color, &self.run_status);
+            } else {
+                ui.label(&self.run_status);
+            }
+        }
+        if let Some(report) = &self.last_run_report {
+            ui.group(|ui| {
+                ui.strong(format!(
+                    "Last {} | settings revision {}",
+                    report.action.label(),
+                    report.settings_revision
+                ));
+                render_flow_report(ui, "Visual", &report.visual);
+                render_flow_report(ui, "Audio", &report.audio);
+            });
+        }
 
         let Some(inspection) = self.inspection.clone() else {
             ui.colored_label(
@@ -275,7 +352,13 @@ impl VideoPrepareApp {
             if ui.button("Back to Dashboard").clicked() {
                 self.screen = Screen::Dashboard;
             }
-            if ui.button("Refresh from disk").clicked() {
+            if ui
+                .add_enabled(
+                    self.run_worker.is_none(),
+                    egui::Button::new("Refresh from disk"),
+                )
+                .clicked()
+            {
                 self.reload_selected_project();
             }
         });
@@ -452,6 +535,7 @@ impl VideoPrepareApp {
             self.selected_project = None;
             self.inspection = None;
             self.selected_scene_id = None;
+            self.last_run_report = None;
             self.refresh_projects();
         }
 
@@ -525,6 +609,9 @@ impl VideoPrepareApp {
     fn select_project(&mut self, project: StoredProject) {
         self.inspection = Some(inspect_project(&project));
         self.selected_scene_id = None;
+        self.last_run_report = None;
+        self.run_status.clear();
+        self.run_status_is_error = false;
         self.selected_project = Some(project);
     }
 
@@ -550,6 +637,97 @@ impl VideoPrepareApp {
                 self.project_status = format!("Project refresh failed: {error}");
                 self.project_status_is_error = true;
                 self.inspection = None;
+            }
+        }
+    }
+
+    fn start_run(&mut self, action: RunAction) {
+        if self.run_worker.is_some() {
+            return;
+        }
+        let Some(project_id) = self
+            .selected_project
+            .as_ref()
+            .map(|project| project.metadata.project_id.clone())
+        else {
+            self.run_status = "No selected project to run.".to_owned();
+            self.run_status_is_error = true;
+            return;
+        };
+
+        let snapshot = self.settings.current();
+        let data_root = snapshot.safe.data_root.clone();
+        let revision = snapshot.revision;
+        let worker_project_id = project_id.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = execute_project_run(snapshot, &worker_project_id, action)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+
+        self.run_worker = Some(RunWorker {
+            receiver,
+            project_id: project_id.clone(),
+            data_root,
+            revision,
+            action,
+        });
+        self.last_run_report = None;
+        self.run_status = format!(
+            "{} started for `{project_id}` with runtime settings revision {revision}.",
+            action.label()
+        );
+        self.run_status_is_error = false;
+    }
+
+    fn poll_run_worker(&mut self, ctx: &egui::Context) {
+        let outcome = match self.run_worker.as_ref() {
+            None => return,
+            Some(worker) => match worker.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(250));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => Some(Err(
+                    "run worker disconnected before returning a result".to_owned(),
+                )),
+            },
+        };
+        let Some(outcome) = outcome else {
+            return;
+        };
+
+        self.run_worker = None;
+        match outcome {
+            Ok(report) => {
+                self.run_status = format!(
+                    "{} finished for `{}` using settings revision {}.",
+                    report.action.label(),
+                    report.project_id,
+                    report.settings_revision
+                );
+                self.run_status_is_error = false;
+
+                let current_root = self.settings.current().safe.data_root.clone();
+                let selected_matches = self
+                    .selected_project
+                    .as_ref()
+                    .is_some_and(|project| project.metadata.project_id == report.project_id);
+                if current_root == report.data_root && selected_matches {
+                    self.reload_selected_project();
+                    self.refresh_projects();
+                } else {
+                    self.run_status.push_str(
+                        " Result persisted to its original Data Root; current selection/settings changed, so auto-refresh was skipped.",
+                    );
+                }
+                self.last_run_report = Some(report);
+            }
+            Err(error) => {
+                self.run_status = format!("Project run failed before flow execution: {error}");
+                self.run_status_is_error = true;
             }
         }
     }
@@ -586,5 +764,32 @@ fn state_text(state: crate::TaskState) -> &'static str {
         crate::TaskState::Skipped => "SKIPPED",
         crate::TaskState::Interrupted => "INTERRUPTED",
         crate::TaskState::UnknownRemote => "UNKNOWN_REMOTE",
+    }
+}
+
+fn render_flow_report(ui: &mut egui::Ui, label: &str, report: &FlowRunReport) {
+    ui.label(format!(
+        "{label}: {}{}",
+        flow_disposition_text(report.disposition),
+        report
+            .state
+            .map(|state| format!(" / {}", state_text(state)))
+            .unwrap_or_default()
+    ));
+    if let Some(message) = &report.message {
+        if matches!(report.disposition, FlowRunDisposition::Blocked) {
+            ui.colored_label(ui.visuals().error_fg_color, message);
+        } else {
+            ui.small(message);
+        }
+    }
+}
+
+fn flow_disposition_text(disposition: FlowRunDisposition) -> &'static str {
+    match disposition {
+        FlowRunDisposition::Executed => "EXECUTED",
+        FlowRunDisposition::SkippedByPolicy => "SKIPPED_BY_POLICY",
+        FlowRunDisposition::SkippedByAction => "SKIPPED_BY_ACTION",
+        FlowRunDisposition::Blocked => "BLOCKED",
     }
 }
