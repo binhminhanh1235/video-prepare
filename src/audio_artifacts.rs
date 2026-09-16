@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -10,12 +10,13 @@ use tempfile::NamedTempFile;
 use thiserror::Error;
 
 use crate::{
-    audio::{load_audio_status, persist_audio_and_coarse, save_audio_status},
-    OmniVoiceArtifact, OmniVoiceArtifactProvider, OmniVoiceArtifactTransport, OmniVoiceError,
-    OmniVoiceProvider, ProjectError, StoredProject, TaskState,
+    audio::{load_audio_status, persist_audio_and_coarse},
+    OmniVoiceArtifact, OmniVoiceArtifactProvider, OmniVoiceError, OmniVoiceProvider, ProjectError,
+    StoredProject, TaskState,
 };
 
 pub const AUDIO_ARTIFACT_SCHEMA_VERSION: u32 = 1;
+const CANONICAL_LOCAL_AUDIO_PATH: &str = "audio/artifacts/full.wav";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioArtifactProof {
@@ -74,6 +75,9 @@ pub enum AudioArtifactError {
     #[error("remote artifact catalog contains multiple canonical output/full.wav candidates")]
     AmbiguousCanonicalArtifact,
 
+    #[error("remote canonical audio artifact metadata is invalid: {0}")]
+    InvalidRemoteArtifact(String),
+
     #[error("remote artifact metadata does not match downloaded bytes: expected {expected}, got {actual}")]
     SizeMismatch { expected: u64, actual: u64 },
 
@@ -113,6 +117,7 @@ pub fn load_audio_artifact_proof(
             proof.schema_version
         )));
     }
+    validate_local_relative_path(&proof.local_relative_path)?;
     Ok(Some(proof))
 }
 
@@ -122,17 +127,28 @@ pub fn reconcile_local_audio_artifact(
     let Some(proof) = load_audio_artifact_proof(&project.root)? else {
         return Ok(None);
     };
+    let mut audio =
+        load_audio_status(&project.root, &project.metadata.project_id).map_err(map_audio_error)?;
+    let latest = audio.attempts.last().ok_or_else(|| {
+        AudioArtifactError::InvalidLocalProof(
+            "artifact proof exists but audio attempt history is empty".to_owned(),
+        )
+    })?;
+
+    if latest.attempt_id != proof.attempt_id
+        || latest.server_base_url != proof.server_base_url
+        || latest.remote_project_id != proof.remote_project_id
+        || latest.remote_source_hash.as_deref() != Some(proof.remote_source_hash.as_str())
+        || latest.job_id.as_deref() != Some(proof.job_id.as_str())
+    {
+        return Ok(None);
+    }
+
     let local_path = project.root.join(&proof.local_relative_path);
     match sha256_file(&local_path) {
         Ok((bytes, hash)) if bytes == proof.local_size_bytes && hash == proof.sha256 => {
-            let mut audio = load_audio_status(&project.root, &project.metadata.project_id)
-                .map_err(map_audio_error)?;
             audio.state = TaskState::Completed;
-            if let Some(attempt) = audio
-                .attempts
-                .iter_mut()
-                .find(|attempt| attempt.attempt_id == proof.attempt_id)
-            {
+            if let Some(attempt) = audio.attempts.last_mut() {
                 attempt.state = TaskState::Completed;
                 attempt.last_error = None;
             }
@@ -146,14 +162,8 @@ pub fn reconcile_local_audio_artifact(
             }))
         }
         _ => {
-            let mut audio = load_audio_status(&project.root, &project.metadata.project_id)
-                .map_err(map_audio_error)?;
             audio.state = TaskState::Partial;
-            if let Some(attempt) = audio
-                .attempts
-                .iter_mut()
-                .find(|attempt| attempt.attempt_id == proof.attempt_id)
-            {
+            if let Some(attempt) = audio.attempts.last_mut() {
                 if attempt.state == TaskState::Completed {
                     attempt.last_error = Some(
                         "local audio artifact is missing or checksum-mismatched; repair required"
@@ -269,12 +279,16 @@ where
     let transport = provider.discover_artifact_transport()?;
     let artifacts = provider.list_artifacts(&transport, &latest.remote_project_id)?;
     let artifact = select_canonical_project_audio(&artifacts, &latest.remote_project_id)?;
+    if artifact.size_bytes == 0 {
+        return Err(AudioArtifactError::InvalidRemoteArtifact(
+            "canonical artifact reports zero bytes".to_owned(),
+        ));
+    }
 
-    let filename = "full.wav";
-    let local_relative_path = format!("audio/artifacts/{filename}");
+    let local_relative_path = CANONICAL_LOCAL_AUDIO_PATH.to_owned();
     let final_path = project.root.join(&local_relative_path);
     let download = provider.download_artifact_atomic(&transport, &artifact.id, &final_path)?;
-    if artifact.size_bytes > 0 && artifact.size_bytes != download.bytes {
+    if artifact.size_bytes != download.bytes {
         let _ = fs::remove_file(&final_path);
         return Err(AudioArtifactError::SizeMismatch {
             expected: artifact.size_bytes,
@@ -318,7 +332,7 @@ where
 
     Ok(AudioArtifactSyncSummary {
         state: TaskState::Completed,
-        artifact_id: Some(artifact.id),
+        artifact_id: Some(artifact.id.clone()),
         local_relative_path: Some(local_relative_path),
         downloaded: true,
     })
@@ -334,11 +348,7 @@ fn select_canonical_project_audio<'a>(
             artifact.kind == "project_audio"
                 && artifact.filename == "full.wav"
                 && artifact.relative_path.ends_with("/output/full.wav")
-                && artifact
-                    .project_id
-                    .as_deref()
-                    .map(|value| value == remote_project_id)
-                    .unwrap_or(true)
+                && artifact.project_id.as_deref() == Some(remote_project_id)
         })
         .collect();
     candidates.sort_by(|left, right| {
@@ -424,6 +434,28 @@ fn sha256_file(path: &Path) -> Result<(u64, String), AudioArtifactError> {
     Ok((total, format!("{:x}", hasher.finalize())))
 }
 
+fn validate_local_relative_path(value: &str) -> Result<(), AudioArtifactError> {
+    if value != CANONICAL_LOCAL_AUDIO_PATH {
+        return Err(AudioArtifactError::InvalidLocalProof(
+            "local path is not the canonical portable audio path".to_owned(),
+        ));
+    }
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(AudioArtifactError::InvalidLocalProof(
+            "local path escapes the project root".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn map_audio_error(error: crate::AudioError) -> AudioArtifactError {
     match error {
         crate::AudioError::Project(project) => AudioArtifactError::Project(project),
@@ -436,8 +468,8 @@ mod tests {
     use super::*;
     use crate::{
         parse_script, AudioExecutor, AudioGenerationSettings, GenerateProjectOptions,
-        OmniVoiceArtifactDownload, OmniVoiceConnection, OmniVoiceImportResult,
-        OmniVoiceJobSubmission, OmniVoiceRemoteJob, ProjectStore,
+        OmniVoiceArtifactDownload, OmniVoiceArtifactTransport, OmniVoiceConnection,
+        OmniVoiceImportResult, OmniVoiceJobSubmission, OmniVoiceRemoteJob, ProjectStore,
     };
     use std::sync::Mutex;
 
@@ -451,9 +483,13 @@ mod tests {
 
     impl MockProvider {
         fn completed(payload: &[u8]) -> Self {
+            Self::completed_at("https://studio.example", payload)
+        }
+
+        fn completed_at(base_url: &str, payload: &[u8]) -> Self {
             let hash_id = "art_0123456789abcdef".to_owned();
             Self {
-                base_url: "https://studio.example".to_owned(),
+                base_url: base_url.to_owned(),
                 job_status: Mutex::new("completed".to_owned()),
                 artifact: Mutex::new(Some(OmniVoiceArtifact {
                     id: hash_id,
@@ -544,9 +580,19 @@ mod tests {
         fn list_artifacts(
             &self,
             _transport: &OmniVoiceArtifactTransport,
-            _project_id: &str,
+            project_id: &str,
         ) -> Result<Vec<OmniVoiceArtifact>, OmniVoiceError> {
-            Ok(self.artifact.lock().unwrap().clone().into_iter().collect())
+            Ok(self
+                .artifact
+                .lock()
+                .unwrap()
+                .clone()
+                .into_iter()
+                .map(|mut artifact| {
+                    artifact.project_id = Some(project_id.to_owned());
+                    artifact
+                })
+                .collect())
         }
 
         fn download_artifact_atomic(
@@ -588,7 +634,7 @@ mod tests {
         assert!(summary.downloaded);
         assert_eq!(*provider.downloads.lock().unwrap(), 1);
         let proof = load_audio_artifact_proof(&project.root).unwrap().unwrap();
-        assert_eq!(proof.local_relative_path, "audio/artifacts/full.wav");
+        assert_eq!(proof.local_relative_path, CANONICAL_LOCAL_AUDIO_PATH);
         assert!(!proof.server_base_url.contains("token"));
         assert_eq!(project.status.audio_flow, TaskState::Completed);
         assert!(project
@@ -608,7 +654,7 @@ mod tests {
         assert!(!skipped.downloaded);
         assert_eq!(*provider.downloads.lock().unwrap(), 1);
 
-        fs::write(reopened.root.join("audio/artifacts/full.wav"), b"corrupt").unwrap();
+        fs::write(reopened.root.join(CANONICAL_LOCAL_AUDIO_PATH), b"corrupt").unwrap();
         let repaired = sync_latest_audio_artifact(&provider, &mut reopened).unwrap();
         assert!(repaired.downloaded);
         assert_eq!(*provider.downloads.lock().unwrap(), 2);
@@ -631,5 +677,25 @@ mod tests {
         let summary = sync_latest_audio_artifact(&provider, &mut project).unwrap();
         assert_eq!(summary.state, TaskState::Running);
         assert_eq!(*provider.downloads.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn old_verified_proof_cannot_complete_a_new_server_attempt() {
+        let (_temp, mut project, provider_a) = project_and_provider();
+        sync_latest_audio_artifact(&provider_a, &mut project).unwrap();
+        assert_eq!(*provider_a.downloads.lock().unwrap(), 1);
+
+        let provider_b = MockProvider::completed_at(
+            "https://studio-b.example",
+            b"RIFF-new-server-stable-test-payload",
+        );
+        AudioExecutor::new(&provider_b)
+            .submit_generation(&mut project, &AudioGenerationSettings::default())
+            .unwrap();
+        let summary = sync_latest_audio_artifact(&provider_b, &mut project).unwrap();
+        assert!(summary.downloaded);
+        assert_eq!(*provider_b.downloads.lock().unwrap(), 1);
+        let proof = load_audio_artifact_proof(&project.root).unwrap().unwrap();
+        assert_eq!(proof.server_base_url, "https://studio-b.example");
     }
 }
