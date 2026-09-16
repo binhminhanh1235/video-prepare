@@ -147,10 +147,11 @@ pub fn create_project_from_script_path(
     script_path: impl AsRef<Path>,
 ) -> Result<StoredProject, ProjectActionError> {
     let script_path = script_path.as_ref().to_path_buf();
-    let raw = fs::read_to_string(&script_path).map_err(|source| ProjectActionError::ScriptRead {
-        path: script_path,
-        source,
-    })?;
+    let raw =
+        fs::read_to_string(&script_path).map_err(|source| ProjectActionError::ScriptRead {
+            path: script_path,
+            source,
+        })?;
     let prepared = parse_script(&raw).map_err(ProjectError::from)?;
     ProjectStore::new(data_root.as_ref())
         .create(project_id, &raw, &prepared)
