@@ -25,6 +25,21 @@ impl RunAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowTarget {
+    Visual,
+    Audio,
+}
+
+impl FlowTarget {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Visual => "Visual Flow",
+            Self::Audio => "Audio Flow",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowRunDisposition {
     Executed,
     SkippedByPolicy,
@@ -83,6 +98,15 @@ pub struct ProjectRunReport {
     pub audio: FlowRunReport,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowRetryReport {
+    pub project_id: String,
+    pub data_root: PathBuf,
+    pub settings_revision: u64,
+    pub target: FlowTarget,
+    pub flow: FlowRunReport,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioNextStep {
     SubmitNew,
@@ -110,6 +134,26 @@ pub fn execute_project_run(
         action,
         visual,
         audio,
+    })
+}
+
+pub fn execute_flow_retry(
+    snapshot: Arc<RuntimeSettingsSnapshot>,
+    project_id: &str,
+    target: FlowTarget,
+) -> Result<FlowRetryReport, ProjectError> {
+    let mut project = ProjectStore::new(&snapshot.safe.data_root).load(project_id)?;
+    let flow = match target {
+        FlowTarget::Visual => execute_visual_flow(&snapshot, &mut project, RunAction::RetryFailed),
+        FlowTarget::Audio => execute_audio_flow(&snapshot, &mut project, RunAction::RetryFailed),
+    };
+
+    Ok(FlowRetryReport {
+        project_id: project.metadata.project_id.clone(),
+        data_root: snapshot.safe.data_root.clone(),
+        settings_revision: snapshot.revision,
+        target,
+        flow,
     })
 }
 
@@ -524,5 +568,62 @@ mod tests {
             report.audio.disposition,
             FlowRunDisposition::SkippedByPolicy
         );
+    }
+
+    #[test]
+    fn visual_only_retry_never_touches_audio_flow() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = include_str!("../examples/demo.vprep");
+        let prepared = parse_script(raw).unwrap();
+        let project = ProjectStore::new(temp.path())
+            .create("demo", raw, &prepared)
+            .unwrap();
+        let snapshot = Arc::new(RuntimeSettingsSnapshot {
+            revision: 11,
+            safe: SafePreferences {
+                data_root: temp.path().to_path_buf(),
+                visual_flow_enabled: false,
+                audio_flow_enabled: true,
+                omnivoice_url: "not a valid url".to_owned(),
+                ..SafePreferences::default()
+            },
+            secrets: RuntimeSecrets {
+                pexels_api_key: Some("never-render-this-key".to_owned()),
+                omnivoice_token: Some("never-render-this-token".to_owned()),
+            },
+        });
+
+        let report = execute_flow_retry(snapshot, "demo", FlowTarget::Visual).unwrap();
+        assert_eq!(report.target, FlowTarget::Visual);
+        assert_eq!(report.flow.disposition, FlowRunDisposition::SkippedByPolicy);
+        assert!(!project.root.join("audio-status.json").exists());
+        let debug = format!("{report:?}");
+        assert!(!debug.contains("never-render-this-key"));
+        assert!(!debug.contains("never-render-this-token"));
+    }
+
+    #[test]
+    fn audio_only_retry_never_touches_visual_flow() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = include_str!("../examples/demo.vprep");
+        let prepared = parse_script(raw).unwrap();
+        let project = ProjectStore::new(temp.path())
+            .create("demo", raw, &prepared)
+            .unwrap();
+        let snapshot = Arc::new(RuntimeSettingsSnapshot {
+            revision: 12,
+            safe: SafePreferences {
+                data_root: temp.path().to_path_buf(),
+                visual_flow_enabled: true,
+                audio_flow_enabled: false,
+                ..SafePreferences::default()
+            },
+            secrets: RuntimeSecrets::default(),
+        });
+
+        let report = execute_flow_retry(snapshot, "demo", FlowTarget::Audio).unwrap();
+        assert_eq!(report.target, FlowTarget::Audio);
+        assert_eq!(report.flow.disposition, FlowRunDisposition::SkippedByPolicy);
+        assert!(!project.root.join("visual-status.json").exists());
     }
 }
