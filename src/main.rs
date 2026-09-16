@@ -1,10 +1,17 @@
 use std::{env, fs, process};
 
-use video_prepare::{parse_script, ProjectStore};
+use video_prepare::{parse_script, run_desktop, ProjectStore};
 
 fn main() {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
+        None => launch_desktop(),
+        Some("gui") => {
+            if args.next().is_some() {
+                usage();
+            }
+            launch_desktop();
+        }
         Some("validate") => {
             let Some(path) = args.next() else {
                 usage();
@@ -83,6 +90,13 @@ fn main() {
     }
 }
 
+fn launch_desktop() {
+    if let Err(error) = run_desktop() {
+        eprintln!("DESKTOP_ERROR: {error}");
+        process::exit(1);
+    }
+}
+
 fn read_script(path: &str) -> String {
     match fs::read_to_string(path) {
         Ok(value) => value,
@@ -95,6 +109,7 @@ fn read_script(path: &str) -> String {
 
 fn usage() -> ! {
     eprintln!("Usage:");
+    eprintln!("  video-prepare [gui]");
     eprintln!("  video-prepare validate <script.vprep>");
     eprintln!("  video-prepare create-project <data-root> <project-id> <script.vprep>");
     eprintln!("  video-prepare open-project <project-root>");
