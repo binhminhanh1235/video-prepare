@@ -52,53 +52,10 @@ pub enum LocalReconciliationError {
 pub fn reconcile_local_project(
     project: &mut StoredProject,
 ) -> Result<LocalReconciliationReport, LocalReconciliationError> {
-    let (visual, invalid_visual_assets, preserved_visual_assets) =
-        reconcile_visual_local_state(project)?;
+    let (visual, invalid_visual_assets, preserved_visual_assets) = reconcile_visual(project)?;
     let mut notes = Vec::new();
+    let audio = reconcile_audio(project, &mut notes)?;
 
-    let audio_before = load_audio_status(&project.root, &project.metadata.project_id)
-        .map_err(|error| LocalReconciliationError::Audio(error.to_string()))?;
-    match reconcile_local_audio_artifact(project) {
-        Ok(_) => {}
-        Err(error) => {
-            notes.push(format!("local audio artifact proof requires repair: {error}"));
-        }
-    }
-
-    let mut audio = load_audio_status(&project.root, &project.metadata.project_id)
-        .map_err(|error| LocalReconciliationError::Audio(error.to_string()))?;
-
-    if audio.state == TaskState::Completed {
-        let proof_is_valid = matches!(
-            reconcile_local_audio_artifact(project),
-            Ok(Some(summary)) if summary.state == TaskState::Completed
-        );
-        if !proof_is_valid {
-            audio = load_audio_status(&project.root, &project.metadata.project_id)
-                .map_err(|error| LocalReconciliationError::Audio(error.to_string()))?;
-            audio.state = TaskState::Partial;
-            if let Some(latest) = audio.attempts.last_mut() {
-                latest.last_error = Some(
-                    "local audio completion proof is missing, invalid, or no longer matches the canonical artifact; repair required"
-                        .to_owned(),
-                );
-            }
-            persist_audio_and_coarse(project, &audio, TaskState::Partial)
-                .map_err(|error| LocalReconciliationError::Audio(error.to_string()))?;
-            notes.push(
-                "audio COMPLETED was downgraded to PARTIAL because durable local proof was not verified"
-                    .to_owned(),
-            );
-        }
-    } else if audio_before.state == TaskState::Completed && audio.state != TaskState::Completed {
-        notes.push(
-            "audio COMPLETED was downgraded because the canonical local artifact did not verify"
-                .to_owned(),
-        );
-    }
-
-    let audio = load_audio_status(&project.root, &project.metadata.project_id)
-        .map_err(|error| LocalReconciliationError::Audio(error.to_string()))?;
     project.status.visual_flow = visual.state;
     project.status.audio_flow = audio.state;
     for scene in &mut project.status.scenes {
@@ -121,7 +78,7 @@ pub fn reconcile_local_project(
     })
 }
 
-fn reconcile_visual_local_state(
+fn reconcile_visual(
     project: &mut StoredProject,
 ) -> Result<(VisualFlowStatus, u32, u32), LocalReconciliationError> {
     let path = visual_status_path(&project.root);
@@ -134,8 +91,8 @@ fn reconcile_visual_local_state(
     for (scene_index, scene_status) in status.scenes.iter_mut().enumerate() {
         for (request_index, request_status) in scene_status.requests.iter_mut().enumerate() {
             let target = project.prepared_script.scenes[scene_index].visuals[request_index].count;
-            let was_running = request_status.state == TaskState::Running;
             let previous_state = request_status.state;
+            let mut request_invalid = 0_u32;
 
             request_status.assets.retain(|asset| {
                 let local_path = project.root.join(&asset.relative_path);
@@ -146,6 +103,7 @@ fn reconcile_visual_local_state(
                     }
                     _ => {
                         invalid_assets = invalid_assets.saturating_add(1);
+                        request_invalid = request_invalid.saturating_add(1);
                         false
                     }
                 }
@@ -154,7 +112,7 @@ fn reconcile_visual_local_state(
             if request_status.assets.len() >= target as usize {
                 request_status.state = TaskState::Completed;
                 request_status.last_error = None;
-            } else if was_running {
+            } else if previous_state == TaskState::Running {
                 request_status.state = TaskState::Interrupted;
                 request_status.last_error = Some(format!(
                     "previous process ended while this visual request was RUNNING; {}/{} verified asset(s) preserved",
@@ -163,7 +121,7 @@ fn reconcile_visual_local_state(
                 ));
             } else if !request_status.assets.is_empty() {
                 request_status.state = TaskState::Partial;
-                if invalid_assets > 0 || previous_state == TaskState::Completed {
+                if request_invalid > 0 || previous_state == TaskState::Completed {
                     request_status.last_error = Some(format!(
                         "local visual proof is incomplete; {}/{} verified asset(s) remain",
                         request_status.assets.len(),
@@ -171,7 +129,7 @@ fn reconcile_visual_local_state(
                     ));
                 }
             } else if matches!(previous_state, TaskState::Completed | TaskState::Partial)
-                || invalid_assets > 0
+                || request_invalid > 0
             {
                 request_status.state = TaskState::Interrupted;
                 request_status.last_error = Some(
@@ -207,6 +165,54 @@ fn reconcile_visual_local_state(
     }
 
     Ok((status, invalid_assets, preserved_assets))
+}
+
+fn reconcile_audio(
+    project: &mut StoredProject,
+    notes: &mut Vec<String>,
+) -> Result<crate::AudioFlowStatus, LocalReconciliationError> {
+    let before = load_audio_status(&project.root, &project.metadata.project_id)
+        .map_err(|error| LocalReconciliationError::Audio(error.to_string()))?;
+
+    match reconcile_local_audio_artifact(project) {
+        Ok(Some(_)) | Ok(None) => {}
+        Err(error) => notes.push(format!("local audio artifact proof requires repair: {error}")),
+    }
+
+    let mut audio = load_audio_status(&project.root, &project.metadata.project_id)
+        .map_err(|error| LocalReconciliationError::Audio(error.to_string()))?;
+
+    if audio.state == TaskState::Completed {
+        let verified = matches!(
+            reconcile_local_audio_artifact(project),
+            Ok(Some(summary)) if summary.state == TaskState::Completed
+        );
+        if !verified {
+            audio = load_audio_status(&project.root, &project.metadata.project_id)
+                .map_err(|error| LocalReconciliationError::Audio(error.to_string()))?;
+            audio.state = TaskState::Partial;
+            if let Some(latest) = audio.attempts.last_mut() {
+                latest.last_error = Some(
+                    "local audio completion proof is missing, invalid, or no longer matches the canonical artifact; repair required"
+                        .to_owned(),
+                );
+            }
+            persist_audio_and_coarse(project, &audio, TaskState::Partial)
+                .map_err(|error| LocalReconciliationError::Audio(error.to_string()))?;
+            notes.push(
+                "audio COMPLETED was downgraded to PARTIAL because durable local proof was not verified"
+                    .to_owned(),
+            );
+        }
+    } else if before.state == TaskState::Completed && audio.state != TaskState::Completed {
+        notes.push(
+            "audio COMPLETED was downgraded because the canonical local artifact did not verify"
+                .to_owned(),
+        );
+    }
+
+    load_audio_status(&project.root, &project.metadata.project_id)
+        .map_err(|error| LocalReconciliationError::Audio(error.to_string()))
 }
 
 fn recompute_visual_states(status: &mut VisualFlowStatus) {
@@ -357,7 +363,7 @@ mod tests {
     use crate::{
         audio::{save_audio_status, AudioAttemptStatus, AudioFlowStatus, AUDIO_STATUS_SCHEMA_VERSION},
         parse_script, PersistedAssetKind, ProjectStore, VisualAssetStatus, VisualRequestStatus,
-        VisualSceneStatus, AUDIO_ARTIFACT_SCHEMA_VERSION, VISUAL_STATUS_SCHEMA_VERSION,
+        VisualSceneStatus, VISUAL_STATUS_SCHEMA_VERSION,
     };
 
     fn create_demo() -> (tempfile::TempDir, StoredProject) {
@@ -370,7 +376,11 @@ mod tests {
         (temp, project)
     }
 
-    fn write_visual_status(project: &StoredProject, state: TaskState, asset: Option<VisualAssetStatus>) {
+    fn write_visual_status(
+        project: &StoredProject,
+        state: TaskState,
+        asset: Option<VisualAssetStatus>,
+    ) {
         let mut scenes = Vec::new();
         for scene in &project.prepared_script.scenes {
             let mut requests = Vec::new();
@@ -394,7 +404,11 @@ mod tests {
             }
             scenes.push(VisualSceneStatus {
                 id: scene.id.clone(),
-                state: if scene.id == "S01" { state } else { TaskState::Pending },
+                state: if scene.id == "S01" {
+                    state
+                } else {
+                    TaskState::Pending
+                },
                 requests,
             });
         }
@@ -468,6 +482,7 @@ mod tests {
         let visual = load_visual_status(&project).unwrap();
         assert_eq!(visual.scenes[0].requests[0].state, TaskState::Interrupted);
         assert!(visual.scenes[0].requests[0].assets.is_empty());
+        assert_eq!(visual.scenes[0].requests[1].state, TaskState::Pending);
     }
 
     #[test]
@@ -541,6 +556,5 @@ mod tests {
         let debug = format!("{report:?}");
         assert!(!debug.to_ascii_lowercase().contains("api_key"));
         assert!(!debug.to_ascii_lowercase().contains("token"));
-        let _ = AUDIO_ARTIFACT_SCHEMA_VERSION;
     }
 }
