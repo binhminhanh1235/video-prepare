@@ -179,20 +179,17 @@ where
         return Ok(summary);
     }
 
-    let mut audio = load_audio_status(&project.root, &project.metadata.project_id)
-        .map_err(map_audio_error)?;
-    let latest_index = audio
-        .attempts
-        .len()
-        .checked_sub(1)
-        .ok_or_else(|| AudioArtifactError::AttemptNotReady("no remote attempt exists".to_owned()))?;
+    let mut audio =
+        load_audio_status(&project.root, &project.metadata.project_id).map_err(map_audio_error)?;
+    let latest_index = audio.attempts.len().checked_sub(1).ok_or_else(|| {
+        AudioArtifactError::AttemptNotReady("no remote attempt exists".to_owned())
+    })?;
     let latest = audio.attempts[latest_index].clone();
 
     if latest.server_base_url != provider.base_url() {
         audio.attempts[latest_index].state = TaskState::UnknownRemote;
-        audio.attempts[latest_index].last_error = Some(
-            "current OmniVoice URL differs from the server that owns this attempt".to_owned(),
-        );
+        audio.attempts[latest_index].last_error =
+            Some("current OmniVoice URL differs from the server that owns this attempt".to_owned());
         audio.state = TaskState::UnknownRemote;
         persist_audio_and_coarse(project, &audio, TaskState::UnknownRemote)
             .map_err(map_audio_error)?;
@@ -252,9 +249,8 @@ where
         }
         other => {
             audio.attempts[latest_index].state = TaskState::UnknownRemote;
-            audio.attempts[latest_index].last_error = Some(format!(
-                "unrecognized remote job status `{other}`"
-            ));
+            audio.attempts[latest_index].last_error =
+                Some(format!("unrecognized remote job status `{other}`"));
             audio.state = TaskState::UnknownRemote;
             persist_audio_and_coarse(project, &audio, TaskState::UnknownRemote)
                 .map_err(map_audio_error)?;
@@ -391,10 +387,11 @@ fn save_audio_artifact_proof(
             path: path.clone(),
             source,
         })?;
-    temp.persist(&path).map_err(|error| AudioArtifactError::Io {
-        path,
-        source: error.error,
-    })?;
+    temp.persist(&path)
+        .map_err(|error| AudioArtifactError::Io {
+            path,
+            source: error.error,
+        })?;
     Ok(())
 }
 
