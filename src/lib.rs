@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod audio_artifacts;
+pub mod connection_tests;
 pub mod desktop;
 pub mod inspection;
 pub mod orchestration;
@@ -19,6 +20,10 @@ pub use audio_artifacts::{
     audio_artifact_proof_path, load_audio_artifact_proof, reconcile_local_audio_artifact,
     sync_latest_audio_artifact, AudioArtifactError, AudioArtifactProof, AudioArtifactSyncSummary,
     AUDIO_ARTIFACT_SCHEMA_VERSION,
+};
+pub use connection_tests::{
+    test_omnivoice_connection, test_pexels_connection, ConnectionTestError, ConnectionTestReport,
+    ConnectionTestTarget, OmniVoiceConnectionReport, PexelsConnectionReport,
 };
 pub use desktop::{run_desktop, VideoPrepareApp};
 pub use inspection::{

@@ -9,7 +9,8 @@ use eframe::egui;
 
 use crate::{
     create_project_from_script_path, discover_projects, execute_project_run, inspect_project,
-    open_project_from_data_root, FlowRunDisposition, FlowRunReport, ProjectCatalog,
+    open_project_from_data_root, test_omnivoice_connection, test_pexels_connection,
+    ConnectionTestReport, ConnectionTestTarget, FlowRunDisposition, FlowRunReport, ProjectCatalog,
     ProjectInspection, ProjectRunReport, QualityPreset, RunAction, RuntimeSettingsDraft,
     RuntimeSettingsStore, StoredProject,
 };
@@ -28,6 +29,12 @@ struct RunWorker {
     data_root: PathBuf,
     revision: u64,
     action: RunAction,
+}
+
+struct ConnectionWorker {
+    receiver: Receiver<Result<ConnectionTestReport, String>>,
+    target: ConnectionTestTarget,
+    applied_revision_at_start: u64,
 }
 
 pub struct VideoPrepareApp {
@@ -49,6 +56,10 @@ pub struct VideoPrepareApp {
     last_run_report: Option<ProjectRunReport>,
     run_status: String,
     run_status_is_error: bool,
+    connection_worker: Option<ConnectionWorker>,
+    last_connection_report: Option<ConnectionTestReport>,
+    connection_status: String,
+    connection_status_is_error: bool,
 }
 
 impl Default for VideoPrepareApp {
@@ -75,6 +86,10 @@ impl Default for VideoPrepareApp {
             last_run_report: None,
             run_status: String::new(),
             run_status_is_error: false,
+            connection_worker: None,
+            last_connection_report: None,
+            connection_status: String::new(),
+            connection_status_is_error: false,
         };
         app.refresh_projects();
         app
@@ -84,6 +99,7 @@ impl Default for VideoPrepareApp {
 impl eframe::App for VideoPrepareApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_run_worker(ctx);
+        self.poll_connection_worker(ctx);
 
         egui::TopBottomPanel::top("top-nav").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -103,7 +119,7 @@ impl eframe::App for VideoPrepareApp {
             Screen::Settings => self.settings_ui(ui),
         });
 
-        if self.run_worker.is_some() {
+        if self.run_worker.is_some() || self.connection_worker.is_some() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
@@ -449,6 +465,8 @@ impl VideoPrepareApp {
         ));
         ui.add_space(8.0);
 
+        let connection_busy = self.connection_worker.is_some();
+
         ui.group(|ui| {
             ui.strong("Project");
             ui.horizontal(|ui| {
@@ -475,7 +493,13 @@ impl VideoPrepareApp {
                 ui.label("Download concurrency");
                 ui.add(egui::DragValue::new(&mut self.draft.download_concurrency).range(1..=32));
             });
-            ui.small("Secrets remain memory-only. Test Connection is wired in a later P4 task.");
+            if ui
+                .add_enabled(!connection_busy, egui::Button::new("Test Pexels"))
+                .clicked()
+            {
+                self.start_connection_test(ConnectionTestTarget::Pexels);
+            }
+            ui.small("The test uses a copy of the current draft. Secrets remain memory-only.");
         });
 
         ui.add_space(8.0);
@@ -504,7 +528,34 @@ impl VideoPrepareApp {
                     });
             });
             ui.checkbox(&mut self.draft.read_section_titles, "Read section titles");
+            if ui
+                .add_enabled(!connection_busy, egui::Button::new("Test OmniVoice"))
+                .clicked()
+            {
+                self.start_connection_test(ConnectionTestTarget::OmniVoice);
+            }
         });
+
+        if let Some(worker) = &self.connection_worker {
+            ui.add_space(8.0);
+            ui.small(format!(
+                "Testing {} with a captured draft. Applied revision at start: {}.",
+                worker.target.label(),
+                worker.applied_revision_at_start
+            ));
+        }
+        if !self.connection_status.is_empty() {
+            ui.add_space(6.0);
+            if self.connection_status_is_error {
+                ui.colored_label(ui.visuals().error_fg_color, &self.connection_status);
+            } else {
+                ui.label(&self.connection_status);
+            }
+        }
+        if let Some(report) = &self.last_connection_report {
+            ui.add_space(6.0);
+            ui.group(|ui| render_connection_report(ui, report));
+        }
 
         ui.add_space(10.0);
         let mut refresh_catalog = false;
@@ -731,6 +782,86 @@ impl VideoPrepareApp {
             }
         }
     }
+
+    fn start_connection_test(&mut self, target: ConnectionTestTarget) {
+        if self.connection_worker.is_some() {
+            return;
+        }
+
+        let applied_revision_at_start = self.settings.current().revision;
+        let (sender, receiver) = mpsc::channel();
+        match target {
+            ConnectionTestTarget::Pexels => {
+                let api_key = self.draft.pexels_api_key.clone();
+                thread::spawn(move || {
+                    let result =
+                        test_pexels_connection(&api_key).map_err(|error| error.to_string());
+                    let _ = sender.send(result);
+                });
+            }
+            ConnectionTestTarget::OmniVoice => {
+                let base_url = self.draft.omnivoice_url.clone();
+                let token = Some(self.draft.omnivoice_token.clone());
+                thread::spawn(move || {
+                    let result = test_omnivoice_connection(&base_url, token)
+                        .map_err(|error| error.to_string());
+                    let _ = sender.send(result);
+                });
+            }
+        }
+
+        self.connection_worker = Some(ConnectionWorker {
+            receiver,
+            target,
+            applied_revision_at_start,
+        });
+        self.last_connection_report = None;
+        self.connection_status = format!(
+            "{} connection test started using a captured copy of the current draft.",
+            target.label()
+        );
+        self.connection_status_is_error = false;
+    }
+
+    fn poll_connection_worker(&mut self, ctx: &egui::Context) {
+        let outcome = match self.connection_worker.as_ref() {
+            None => return,
+            Some(worker) => match worker.receiver.try_recv() {
+                Ok(result) => Some((worker.target, worker.applied_revision_at_start, result)),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(250));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => Some((
+                    worker.target,
+                    worker.applied_revision_at_start,
+                    Err("connection-test worker disconnected before returning a result".to_owned()),
+                )),
+            },
+        };
+        let Some((target, applied_revision_at_start, outcome)) = outcome else {
+            return;
+        };
+
+        self.connection_worker = None;
+        match outcome {
+            Ok(report) => {
+                self.connection_status = format!(
+                    "{} connection test passed. It used the captured draft; applied revision at start was {}.",
+                    target.label(),
+                    applied_revision_at_start
+                );
+                self.connection_status_is_error = false;
+                self.last_connection_report = Some(report);
+            }
+            Err(error) => {
+                self.connection_status =
+                    format!("{} connection test failed: {error}", target.label());
+                self.connection_status_is_error = true;
+                self.last_connection_report = None;
+            }
+        }
+    }
 }
 
 pub fn run_desktop() -> eframe::Result<()> {
@@ -792,4 +923,53 @@ fn flow_disposition_text(disposition: FlowRunDisposition) -> &'static str {
         FlowRunDisposition::SkippedByAction => "SKIPPED_BY_ACTION",
         FlowRunDisposition::Blocked => "BLOCKED",
     }
+}
+
+fn render_connection_report(ui: &mut egui::Ui, report: &ConnectionTestReport) {
+    match report {
+        ConnectionTestReport::Pexels(report) => {
+            ui.strong("Pexels connection");
+            ui.label(format!("Provider: {}", report.provider));
+            ui.small(format!(
+                "Rate limit: limit={} remaining={} reset_unix={}",
+                optional_u64(report.rate_limit.limit),
+                optional_u64(report.rate_limit.remaining),
+                optional_u64(report.rate_limit.reset_unix)
+            ));
+        }
+        ConnectionTestReport::OmniVoice(report) => {
+            ui.strong("OmniVoice connection");
+            ui.label(format!("Base URL: {}", report.base_url));
+            ui.small(format!(
+                "Service: {}",
+                report.service.as_deref().unwrap_or("not advertised")
+            ));
+            ui.small(format!(
+                "Project import: {}",
+                report.project_import_endpoint
+            ));
+            ui.small(format!(
+                "Generate project: {}",
+                report.generate_project_endpoint
+            ));
+            ui.small(format!(
+                "Jobs: {}",
+                report.jobs_endpoint.as_deref().unwrap_or("not advertised")
+            ));
+            ui.small(format!(
+                "Artifact content download: {}",
+                if report.artifact_content_download {
+                    "supported"
+                } else {
+                    "not advertised"
+                }
+            ));
+        }
+    }
+}
+
+fn optional_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_owned())
 }
