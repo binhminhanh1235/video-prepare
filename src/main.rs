@@ -1,6 +1,8 @@
 use std::{env, fs, process};
 
-use video_prepare::{parse_script, run_desktop, ProjectStore};
+use video_prepare::{
+    import_manual_visual_asset, parse_script, run_desktop, ProjectStore,
+};
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -86,6 +88,51 @@ fn main() {
                 }
             }
         }
+        Some("import-visual") => {
+            let (Some(project_root), Some(scene_id), Some(visual_id), Some(source_path)) =
+                (args.next(), args.next(), args.next(), args.next())
+            else {
+                usage();
+            };
+            if args.next().is_some() {
+                usage();
+            }
+            let mut project = match ProjectStore::open(&project_root) {
+                Ok(project) => project,
+                Err(error) => {
+                    eprintln!("PROJECT_OPEN_ERROR: {error}");
+                    process::exit(1);
+                }
+            };
+            match import_manual_visual_asset(&mut project, &scene_id, &visual_id, &source_path) {
+                Ok(summary) => {
+                    println!(
+                        "{}",
+                        if summary.already_present {
+                            "ALREADY_PRESENT"
+                        } else {
+                            "IMPORTED"
+                        }
+                    );
+                    println!("project_id: {}", summary.project_id);
+                    println!("scene_id: {}", summary.scene_id);
+                    println!("visual_id: {}", summary.visual_id);
+                    println!("slot: {}", summary.slot);
+                    println!("kind: {:?}", summary.kind);
+                    println!("path: {}", summary.relative_path);
+                    println!("sha256: {}", summary.sha256);
+                    println!("bytes: {}", summary.bytes);
+                    println!("request_state: {:?}", summary.request_state);
+                    println!("scene_state: {:?}", summary.scene_state);
+                    println!("visual_flow: {:?}", summary.flow_state);
+                    println!("overall: {:?}", summary.overall);
+                }
+                Err(error) => {
+                    eprintln!("MANUAL_VISUAL_IMPORT_ERROR: {error}");
+                    process::exit(1);
+                }
+            }
+        }
         _ => usage(),
     }
 }
@@ -113,5 +160,6 @@ fn usage() -> ! {
     eprintln!("  video-prepare validate <script.vprep>");
     eprintln!("  video-prepare create-project <data-root> <project-id> <script.vprep>");
     eprintln!("  video-prepare open-project <project-root>");
+    eprintln!("  video-prepare import-visual <project-root> <scene-id> <visual-id> <image-or-video-file>");
     process::exit(2);
 }
