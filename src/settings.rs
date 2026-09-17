@@ -13,6 +13,13 @@ pub const MAX_DOWNLOAD_CONCURRENCY: u32 = 32;
 pub const SETTINGS_FILE_NAME: &str = "preferences.json";
 pub const SETTINGS_DIR_NAME: &str = "video-prepare";
 pub const SETTINGS_DIR_OVERRIDE_ENV: &str = "VIDEO_PREPARE_CONFIG_DIR";
+const SETTINGS_SCHEMA_VERSION: u32 = 1;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const SECRET_SERVICE_NAME: &str = "video-prepare";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const PEXELS_SECRET_ACCOUNT: &str = "pexels-api-key";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const OMNIVOICE_SECRET_ACCOUNT: &str = "omnivoice-api-token";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -80,6 +87,23 @@ impl SafePreferences {
 
     pub fn from_json(input: &str) -> Result<Self, SettingsError> {
         serde_json::from_str(input).map_err(|error| SettingsError::Serialization(error.to_string()))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedSettingsDocument {
+    schema_version: u32,
+    revision: u64,
+    preferences: SafePreferences,
+}
+
+impl PersistedSettingsDocument {
+    fn new(revision: u64, preferences: SafePreferences) -> Self {
+        Self {
+            schema_version: SETTINGS_SCHEMA_VERSION,
+            revision,
+            preferences,
+        }
     }
 }
 
@@ -181,6 +205,10 @@ impl RuntimeSettingsDraft {
 pub struct RuntimeSettingsStore {
     current: Arc<RuntimeSettingsSnapshot>,
     persistence_path: Option<PathBuf>,
+    loaded_from_disk: bool,
+    use_system_secret_store: bool,
+    secrets_restored: bool,
+    secret_persistence_warning: Option<String>,
 }
 
 impl Default for RuntimeSettingsStore {
@@ -188,6 +216,10 @@ impl Default for RuntimeSettingsStore {
         Self {
             current: Arc::new(RuntimeSettingsSnapshot::default()),
             persistence_path: None,
+            loaded_from_disk: false,
+            use_system_secret_store: false,
+            secrets_restored: false,
+            secret_persistence_warning: None,
         }
     }
 }
@@ -197,6 +229,10 @@ impl RuntimeSettingsStore {
         Self {
             current: Arc::new(snapshot),
             persistence_path: None,
+            loaded_from_disk: false,
+            use_system_secret_store: false,
+            secrets_restored: false,
+            secret_persistence_warning: None,
         }
     }
 
@@ -204,23 +240,40 @@ impl RuntimeSettingsStore {
         Self {
             current: Arc::new(RuntimeSettingsSnapshot::default()),
             persistence_path: Some(path.into()),
+            loaded_from_disk: false,
+            use_system_secret_store: false,
+            secrets_restored: false,
+            secret_persistence_warning: None,
+        }
+    }
+
+    fn with_system_persistence_path(path: impl Into<PathBuf>) -> Self {
+        Self {
+            current: Arc::new(RuntimeSettingsSnapshot::default()),
+            persistence_path: Some(path.into()),
+            loaded_from_disk: false,
+            use_system_secret_store: system_secret_store_supported(),
+            secrets_restored: false,
+            secret_persistence_warning: None,
         }
     }
 
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, SettingsError> {
-        let path = path.as_ref().to_path_buf();
-        let safe = match fs::read_to_string(&path) {
+        Self::load_from_path_with_secret_store(path.as_ref(), false)
+    }
+
+    fn load_from_path_with_secret_store(
+        path: &Path,
+        use_system_secret_store: bool,
+    ) -> Result<Self, SettingsError> {
+        let path = path.to_path_buf();
+        let (revision, safe, loaded_from_disk) = match fs::read_to_string(&path) {
             Ok(raw) => {
-                let parsed: SafePreferences = serde_json::from_str(&raw).map_err(|error| {
-                    SettingsError::PersistenceDecode {
-                        path: path.clone(),
-                        message: error.to_string(),
-                    }
-                })?;
-                validate_loaded_safe_preferences(parsed)?
+                let (revision, safe) = decode_persisted_preferences(&path, &raw)?;
+                (revision, safe, true)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                SafePreferences::default()
+                (0, SafePreferences::default(), false)
             }
             Err(error) => {
                 return Err(SettingsError::PersistenceRead {
@@ -230,21 +283,59 @@ impl RuntimeSettingsStore {
             }
         };
 
+        let (secrets, secrets_restored, secret_persistence_warning) =
+            if use_system_secret_store && system_secret_store_supported() {
+                match load_system_runtime_secrets() {
+                    Ok(secrets) => {
+                        let restored =
+                            secrets.pexels_api_key.is_some() || secrets.omnivoice_token.is_some();
+                        (secrets, restored, None)
+                    }
+                    Err(message) => (
+                        RuntimeSecrets::default(),
+                        false,
+                        Some(format!("Could not restore secure secrets: {message}")),
+                    ),
+                }
+            } else {
+                (RuntimeSecrets::default(), false, None)
+            };
+
         Ok(Self {
             current: Arc::new(RuntimeSettingsSnapshot {
-                revision: 0,
+                revision,
                 safe,
-                secrets: RuntimeSecrets::default(),
+                secrets,
             }),
             persistence_path: Some(path),
+            loaded_from_disk,
+            use_system_secret_store,
+            secrets_restored,
+            secret_persistence_warning,
         })
     }
 
     pub fn load_persistent_or_default() -> (Self, Option<SettingsError>) {
         match default_preferences_path() {
-            Ok(path) => match Self::load_from_path(&path) {
+            Ok(path) => match Self::load_from_path_with_secret_store(&path, true) {
                 Ok(store) => (store, None),
-                Err(error) => (Self::with_persistence_path(path), Some(error)),
+                Err(error) => {
+                    let mut store = Self::with_system_persistence_path(path);
+                    if store.use_system_secret_store {
+                        match load_system_runtime_secrets() {
+                            Ok(secrets) => {
+                                store.secrets_restored = secrets.pexels_api_key.is_some()
+                                    || secrets.omnivoice_token.is_some();
+                                Arc::make_mut(&mut store.current).secrets = secrets;
+                            }
+                            Err(message) => {
+                                store.secret_persistence_warning =
+                                    Some(format!("Could not restore secure secrets: {message}"));
+                            }
+                        }
+                    }
+                    (store, Some(error))
+                }
             },
             Err(error) => (Self::default(), Some(error)),
         }
@@ -262,6 +353,22 @@ impl RuntimeSettingsStore {
         self.persistence_path.as_deref()
     }
 
+    pub fn loaded_from_disk(&self) -> bool {
+        self.loaded_from_disk
+    }
+
+    pub fn system_secret_persistence_enabled(&self) -> bool {
+        self.use_system_secret_store
+    }
+
+    pub fn secrets_restored(&self) -> bool {
+        self.secrets_restored
+    }
+
+    pub fn secret_persistence_warning(&self) -> Option<&str> {
+        self.secret_persistence_warning.as_deref()
+    }
+
     pub fn apply(
         &mut self,
         draft: &RuntimeSettingsDraft,
@@ -274,7 +381,17 @@ impl RuntimeSettingsStore {
             .ok_or(SettingsError::RevisionOverflow)?;
 
         if let Some(path) = &self.persistence_path {
-            persist_safe_preferences(path, &safe)?;
+            persist_safe_preferences(path, revision, &safe)?;
+            self.loaded_from_disk = true;
+        }
+
+        self.secret_persistence_warning = None;
+        if self.use_system_secret_store {
+            if let Err(message) = persist_system_runtime_secrets(&secrets) {
+                self.secret_persistence_warning = Some(format!(
+                    "Settings were saved, but secure secrets could not be saved: {message}"
+                ));
+            }
         }
 
         let next = Arc::new(RuntimeSettingsSnapshot {
@@ -307,7 +424,7 @@ pub enum SettingsError {
     #[error("OmniVoice URL must not contain embedded credentials")]
     EmbeddedOmniVoiceCredentials,
 
-    #[error("OmniVoice URL must be a service root without path, query, or fragment")]
+    #[error("OmniVoice URL must be a service root or /api/v1 endpoint without query or fragment")]
     InvalidOmniVoiceBasePath,
 
     #[error("settings revision overflow")]
@@ -394,8 +511,12 @@ pub fn normalize_omnivoice_url(input: &str, required: bool) -> Result<String, Se
     if !url.username().is_empty() || url.password().is_some() {
         return Err(SettingsError::EmbeddedOmniVoiceCredentials);
     }
-    if url.query().is_some() || url.fragment().is_some() || !matches!(url.path(), "" | "/") {
+    if url.query().is_some() || url.fragment().is_some() {
         return Err(SettingsError::InvalidOmniVoiceBasePath);
+    }
+    match url.path().trim_end_matches('/') {
+        "" | "/api/v1" => {}
+        _ => return Err(SettingsError::InvalidOmniVoiceBasePath),
     }
     url.set_path("/");
     Ok(url.as_str().trim_end_matches('/').to_owned())
@@ -420,8 +541,53 @@ fn validate_loaded_safe_preferences(
     Ok(safe)
 }
 
-fn persist_safe_preferences(path: &Path, safe: &SafePreferences) -> Result<(), SettingsError> {
-    let json = safe.to_json_pretty()?;
+fn decode_persisted_preferences(
+    path: &Path,
+    raw: &str,
+) -> Result<(u64, SafePreferences), SettingsError> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|error| SettingsError::PersistenceDecode {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })?;
+
+    let (revision, safe) = if value.get("preferences").is_some() {
+        let document: PersistedSettingsDocument =
+            serde_json::from_value(value).map_err(|error| SettingsError::PersistenceDecode {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        if document.schema_version > SETTINGS_SCHEMA_VERSION {
+            return Err(SettingsError::PersistenceDecode {
+                path: path.to_path_buf(),
+                message: format!(
+                    "unsupported settings schema version {} (max supported {})",
+                    document.schema_version, SETTINGS_SCHEMA_VERSION
+                ),
+            });
+        }
+        (document.revision, document.preferences)
+    } else {
+        // Backward compatibility with the original plain SafePreferences JSON.
+        let safe: SafePreferences =
+            serde_json::from_value(value).map_err(|error| SettingsError::PersistenceDecode {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        (0, safe)
+    };
+
+    Ok((revision, validate_loaded_safe_preferences(safe)?))
+}
+
+fn persist_safe_preferences(
+    path: &Path,
+    revision: u64,
+    safe: &SafePreferences,
+) -> Result<(), SettingsError> {
+    let document = PersistedSettingsDocument::new(revision, safe.clone());
+    let json = serde_json::to_string_pretty(&document)
+        .map_err(|error| SettingsError::Serialization(error.to_string()))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| SettingsError::PersistenceWrite {
             path: path.to_path_buf(),
@@ -432,6 +598,61 @@ fn persist_safe_preferences(path: &Path, safe: &SafePreferences) -> Result<(), S
         path: path.to_path_buf(),
         message: error.to_string(),
     })
+}
+
+fn system_secret_store_supported() -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn load_system_runtime_secrets() -> Result<RuntimeSecrets, String> {
+    Ok(RuntimeSecrets {
+        pexels_api_key: load_system_secret(PEXELS_SECRET_ACCOUNT)?,
+        omnivoice_token: load_system_secret(OMNIVOICE_SECRET_ACCOUNT)?,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn load_system_runtime_secrets() -> Result<RuntimeSecrets, String> {
+    Err("OS credential persistence is currently supported on macOS and Windows".to_owned())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn persist_system_runtime_secrets(secrets: &RuntimeSecrets) -> Result<(), String> {
+    persist_system_secret(PEXELS_SECRET_ACCOUNT, secrets.pexels_api_key.as_deref())?;
+    persist_system_secret(OMNIVOICE_SECRET_ACCOUNT, secrets.omnivoice_token.as_deref())?;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn persist_system_runtime_secrets(_secrets: &RuntimeSecrets) -> Result<(), String> {
+    Err("OS credential persistence is currently supported on macOS and Windows".to_owned())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn load_system_secret(account: &str) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(SECRET_SERVICE_NAME, account)
+        .map_err(|error| format!("credential entry `{account}`: {error}"))?;
+    match entry.get_password() {
+        Ok(value) => Ok((!value.is_empty()).then_some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("read credential `{account}`: {error}")),
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn persist_system_secret(account: &str, value: Option<&str>) -> Result<(), String> {
+    let entry = keyring::Entry::new(SECRET_SERVICE_NAME, account)
+        .map_err(|error| format!("credential entry `{account}`: {error}"))?;
+    match value {
+        Some(value) if !value.is_empty() => entry
+            .set_password(value)
+            .map_err(|error| format!("write credential `{account}`: {error}")),
+        _ => match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(format!("delete credential `{account}`: {error}")),
+        },
+    }
 }
 
 fn secret(value: &str) -> Option<String> {
@@ -573,8 +794,9 @@ mod tests {
 
         let reopened = RuntimeSettingsStore::load_from_path(&path).unwrap();
         let current = reopened.current();
-        assert_eq!(current.revision, 0);
+        assert_eq!(current.revision, applied.revision);
         assert_eq!(current.safe, applied.safe);
+        assert!(reopened.loaded_from_disk());
         assert!(current.secrets.pexels_api_key.is_none());
         assert!(current.secrets.omnivoice_token.is_none());
         assert_eq!(reopened.persistence_path(), Some(path.as_path()));
@@ -604,6 +826,72 @@ mod tests {
         let error = store.apply(&draft).unwrap_err();
         assert!(matches!(error, SettingsError::PersistenceWrite { .. }));
         assert_eq!(store.current().as_ref(), before.as_ref());
+    }
+
+    #[test]
+    fn persisted_document_survives_restart_with_revision_and_never_contains_secrets() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("preferences.json");
+        let mut first_launch = RuntimeSettingsStore::with_persistence_path(&path);
+        let mut draft = first_launch.draft();
+        draft.data_root = temp.path().join("data-root").display().to_string();
+        draft.visual_flow_enabled = true;
+        draft.audio_flow_enabled = true;
+        draft.omnivoice_url = "https://studio.example/api/v1".to_owned();
+        draft.pexels_api_key = "do-not-write-pexels".to_owned();
+        draft.omnivoice_token = "do-not-write-token".to_owned();
+        draft.voice_name = "Narrator Two".to_owned();
+        draft.language = "vi".to_owned();
+
+        let saved = first_launch.apply(&draft).unwrap();
+        assert_eq!(saved.revision, 1);
+        assert_eq!(saved.safe.omnivoice_url, "https://studio.example");
+
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"schema_version\": 1"));
+        assert!(raw.contains("\"revision\": 1"));
+        assert!(!raw.contains("do-not-write-pexels"));
+        assert!(!raw.contains("do-not-write-token"));
+
+        let second_launch = RuntimeSettingsStore::load_from_path(&path).unwrap();
+        let restored = second_launch.draft();
+        assert_eq!(second_launch.current().revision, 1);
+        assert!(second_launch.loaded_from_disk());
+        assert_eq!(restored.data_root, draft.data_root);
+        assert!(restored.visual_flow_enabled);
+        assert!(restored.audio_flow_enabled);
+        assert_eq!(restored.omnivoice_url, "https://studio.example");
+        assert_eq!(restored.voice_name, "Narrator Two");
+        assert_eq!(restored.language, "vi");
+    }
+
+    #[test]
+    fn legacy_plain_preferences_file_still_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("preferences.json");
+        fs::write(
+            &path,
+            r#"{"data_root":"legacy-root","visual_flow_enabled":true}"#,
+        )
+        .unwrap();
+
+        let store = RuntimeSettingsStore::load_from_path(&path).unwrap();
+        assert_eq!(store.current().revision, 0);
+        assert_eq!(store.current().safe.data_root, PathBuf::from("legacy-root"));
+        assert!(store.current().safe.visual_flow_enabled);
+        assert!(store.loaded_from_disk());
+    }
+
+    #[test]
+    fn public_rest_api_url_is_accepted_and_normalized_to_service_root() {
+        assert_eq!(
+            normalize_omnivoice_url("https://studio.example/api/v1", true).unwrap(),
+            "https://studio.example"
+        );
+        assert_eq!(
+            normalize_omnivoice_url("https://studio.example/api/v1/", true).unwrap(),
+            "https://studio.example"
+        );
     }
 
     #[test]

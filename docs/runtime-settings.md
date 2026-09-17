@@ -25,6 +25,21 @@ Read section titles
 Download concurrency
 ```
 
+## 1.1 Persistence qua restart
+
+Khi user bam `Apply settings`:
+
+- non-secret settings duoc ghi vao `preferences.json` trong app config directory;
+- file co schema version + revision de UI co the xac nhan lan save/load that;
+- lan khoi dong tiep theo app load file nay truoc khi render UI va khoi tao draft tu persisted snapshot;
+- format plain `SafePreferences` cu van duoc load de backward-compatible;
+- tren macOS va Windows, `Pexels API Key` va `OmniVoice API Token` duoc luu trong OS credential store, khong nam trong `preferences.json`;
+- neu secure credential store loi, non-secret settings van duoc save va UI phai hien warning ro rang.
+
+UI phai hien thi path `Loaded from` / `Will save to`, revision da load va secure-secret status de tranh cam giac save thanh cong nhung restart lai mat du lieu.
+
+`OmniVoice URL` chap nhan ca service root va public REST URL ket thuc bang `/api/v1`; app normalize `/api/v1` ve service root de user co the paste truc tiep URL OmniVoice Studio in ra luc startup.
+
 ## 2. Settings groups
 
 ### Project

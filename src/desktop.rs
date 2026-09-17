@@ -117,9 +117,23 @@ impl Default for VideoPrepareApp {
                 true,
             ),
             None => match settings.persistence_path() {
+                Some(path) if settings.loaded_from_disk() => {
+                    let mut message = format!(
+                        "Loaded saved settings revision {} from {}.",
+                        settings.current().revision,
+                        path.display()
+                    );
+                    if settings.secrets_restored() {
+                        message.push_str(" Secure API credentials were restored from the OS credential store.");
+                    }
+                    if let Some(warning) = settings.secret_persistence_warning() {
+                        message.push_str(&format!(" {warning}"));
+                    }
+                    (message, false)
+                }
                 Some(path) => (
                     format!(
-                        "Settings persistence is enabled at {}. API keys and tokens remain session-only.",
+                        "No saved settings file exists yet. Apply settings will create {}.",
                         path.display()
                     ),
                     false,
@@ -1142,9 +1156,25 @@ impl VideoPrepareApp {
           );
       });
       if let Some(path) = self.settings.persistence_path() {
-          ui.small(format!("Saved preferences: {}", path.display()));
+          if self.settings.loaded_from_disk() {
+              ui.small(format!("Loaded from: {}", path.display()));
+          } else {
+              ui.small(format!("Will save to: {}", path.display()));
+          }
       }
-      ui.small("Data Root, flow toggles, provider URL, voice options, quality, and concurrency are restored on next launch. API keys and tokens are intentionally session-only.");
+      ui.small("Data Root, flow toggles, provider URL, voice options, quality, and concurrency are restored on next launch.");
+      if self.settings.system_secret_persistence_enabled() {
+          if self.settings.secrets_restored() {
+              ui.small("Pexels API Key and OmniVoice API Token were restored from the OS credential store.");
+          } else {
+              ui.small("Pexels API Key and OmniVoice API Token are saved in the OS credential store when you Apply settings.");
+          }
+      } else {
+          ui.small("Secure API-key persistence is unavailable on this platform; secrets remain session-only.");
+      }
+      if let Some(warning) = self.settings.secret_persistence_warning() {
+          ui.colored_label(ui.visuals().warn_fg_color, warning);
+      }
 
       let connection_busy = self.connection_worker.is_some();
 
@@ -1251,7 +1281,7 @@ impl VideoPrepareApp {
                   ui.spinner();
               }
           });
-          ui.small("Connection tests use a captured copy of the draft. The API key is session-only and is never written to the preferences file.");
+          ui.small("Connection tests use a captured copy of the draft. The API key is never written to preferences.json; on macOS/Windows it is stored in the OS credential store after Apply settings.");
       });
 
       ui.add_space(12.0);
@@ -1385,11 +1415,22 @@ impl VideoPrepareApp {
                       Ok(snapshot) => {
                           self.draft = RuntimeSettingsDraft::from_snapshot(&snapshot);
                           self.status = match self.settings.persistence_path() {
-                              Some(path) => format!(
-                                  "Applied runtime settings revision {} and saved preferences to {}. API keys and tokens remain session-only.",
-                                  snapshot.revision,
-                                  path.display()
-                              ),
+                              Some(path) => {
+                                  let mut message = format!(
+                                      "Applied runtime settings revision {} and saved preferences to {}.",
+                                      snapshot.revision,
+                                      path.display()
+                                  );
+                                  if self.settings.system_secret_persistence_enabled()
+                                      && self.settings.secret_persistence_warning().is_none()
+                                  {
+                                      message.push_str(" API credentials were saved to the OS credential store.");
+                                  }
+                                  if let Some(warning) = self.settings.secret_persistence_warning() {
+                                      message.push_str(&format!(" {warning}"));
+                                  }
+                                  message
+                              }
                               None => format!(
                                   "Applied runtime settings revision {}. Persistent storage is unavailable.",
                                   snapshot.revision
