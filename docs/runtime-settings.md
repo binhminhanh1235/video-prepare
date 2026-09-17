@@ -31,7 +31,8 @@ Download concurrency
 
 `Data Root`
 
-- user chon thu muc luu toan bo Video Prepare data;
+- user chon thu muc bang system folder browser (Finder tren macOS, File Explorer/folder dialog tren Windows, system chooser tren Linux), khong can go path thu cong;
+- field Data Root tren UI la read-only va duoc cap nhat tu folder browser;
 - app tao `projects/` ben trong Data Root;
 - project phai portable trong Data Root;
 - khong luu absolute path vao project neu co the dung relative path.
