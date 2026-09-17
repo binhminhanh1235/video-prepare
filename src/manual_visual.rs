@@ -124,9 +124,7 @@ pub fn import_manual_visual_asset(
         }
     })?;
     if !metadata.is_file() {
-        return Err(ManualVisualError::SourceNotFile(
-            source_path.to_path_buf(),
-        ));
+        return Err(ManualVisualError::SourceNotFile(source_path.to_path_buf()));
     }
     if metadata.len() == 0 {
         return Err(ManualVisualError::EmptySource(source_path.to_path_buf()));
