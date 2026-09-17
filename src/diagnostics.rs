@@ -53,12 +53,7 @@ impl Diagnostic {
     }
 
     pub fn configuration(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(
-            code,
-            DiagnosticCategory::Configuration,
-            false,
-            message,
-        )
+        Self::new(code, DiagnosticCategory::Configuration, false, message)
     }
 
     pub fn storage(code: impl Into<String>, message: impl Into<String>) -> Self {
@@ -244,7 +239,8 @@ pub fn append_run_log_event(
         path: path.clone(),
         source,
     })?;
-    file.sync_data().map_err(|source| RunLogError::Io { path, source })?;
+    file.sync_data()
+        .map_err(|source| RunLogError::Io { path, source })?;
     Ok(())
 }
 
@@ -298,7 +294,8 @@ mod tests {
 
     #[test]
     fn stock_provider_errors_have_stable_categories_and_retryability() {
-        let auth = Diagnostic::from_stock_provider(&StockProviderError::Authentication { status: 401 });
+        let auth =
+            Diagnostic::from_stock_provider(&StockProviderError::Authentication { status: 401 });
         assert_eq!(auth.code, "PROVIDER_AUTH");
         assert_eq!(auth.category, DiagnosticCategory::Authentication);
         assert!(!auth.retryable);
