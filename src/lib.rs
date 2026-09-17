@@ -37,7 +37,7 @@ pub use diagnostics::{
 };
 pub use inspection::{
     inspect_project, AudioAttemptInspection, AudioInspection, InspectionProblem, ProjectInspection,
-    SceneInspection, VisualRequestInspection,
+    SceneInspection, VisualAssetInspection, VisualRequestInspection,
 };
 pub use manual_visual::{
     import_manual_visual_asset, ManualVisualError, ManualVisualImportSummary,

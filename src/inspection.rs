@@ -1,4 +1,9 @@
-use crate::{load_audio_status, load_visual_status, AudioFlowStatus, StoredProject, TaskState};
+use std::path::{Path, PathBuf};
+
+use crate::{
+    load_audio_status, load_visual_status, AudioFlowStatus, PersistedAssetKind, StoredProject,
+    TaskState,
+};
 
 #[cfg(test)]
 use crate::VisualFlowStatus;
@@ -12,11 +17,23 @@ pub struct InspectionProblem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisualAssetInspection {
+    pub slot: u32,
+    pub kind: PersistedAssetKind,
+    pub provider: String,
+    pub provider_asset_id: String,
+    pub relative_path: String,
+    pub absolute_path: PathBuf,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisualRequestInspection {
     pub id: String,
     pub state: TaskState,
     pub target_count: u32,
     pub completed_assets: usize,
+    pub assets: Vec<VisualAssetInspection>,
     pub attempted_queries: Vec<String>,
     pub successful_query: Option<String>,
     pub last_error: Option<String>,
@@ -152,6 +169,22 @@ pub fn inspect_project(project: &StoredProject) -> ProjectInspection {
                             state: stored.state,
                             target_count: request.count,
                             completed_assets: stored.assets.len(),
+                            assets: stored
+                                .assets
+                                .iter()
+                                .map(|asset| VisualAssetInspection {
+                                    slot: asset.slot,
+                                    kind: asset.kind,
+                                    provider: asset.provider.clone(),
+                                    provider_asset_id: asset.provider_asset_id.clone(),
+                                    relative_path: asset.relative_path.clone(),
+                                    absolute_path: absolute_asset_path(
+                                        &project.root,
+                                        &asset.relative_path,
+                                    ),
+                                    bytes: asset.bytes,
+                                })
+                                .collect(),
                             attempted_queries: stored.attempted_queries.clone(),
                             successful_query: stored.successful_query.clone(),
                             last_error: stored.last_error.clone(),
@@ -218,6 +251,19 @@ pub fn inspect_project(project: &StoredProject) -> ProjectInspection {
         audio: audio_inspection,
         problems,
     }
+}
+
+fn absolute_asset_path(project_root: &Path, relative_path: &str) -> PathBuf {
+    let path = project_root.join(relative_path);
+    if let Ok(canonical) = std::fs::canonicalize(&path) {
+        return canonical;
+    }
+    if path.is_absolute() {
+        return path;
+    }
+    std::env::current_dir()
+        .map(|current| current.join(&path))
+        .unwrap_or(path)
 }
 
 fn aggregate_project_state(visual: TaskState, audio: TaskState) -> TaskState {
@@ -398,6 +444,16 @@ mod tests {
         assert_eq!(scene.visual_state, TaskState::Partial);
         assert_eq!(scene.visual_requests[0].completed_assets, 1);
         assert_eq!(scene.visual_requests[0].target_count, 2);
+        assert_eq!(scene.visual_requests[0].assets.len(), 1);
+        let asset = &scene.visual_requests[0].assets[0];
+        assert_eq!(asset.slot, 1);
+        assert_eq!(asset.kind, crate::PersistedAssetKind::Video);
+        assert_eq!(asset.provider, "pexels");
+        assert_eq!(asset.provider_asset_id, "42");
+        assert_eq!(asset.relative_path, "dummy.mp4");
+        assert!(asset.absolute_path.is_absolute());
+        assert_eq!(asset.absolute_path, project.root.join("dummy.mp4"));
+        assert_eq!(asset.bytes, 10);
         assert_eq!(scene.visual_requests[1].state, TaskState::Failed);
         assert!(inspection
             .problems
