@@ -1,0 +1,456 @@
+name: One-shot downloaded asset actions
+
+on:
+  push:
+    branches:
+      - feat/downloaded-asset-actions
+    paths:
+      - '.github/workflows/one-shot-asset-actions.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/downloaded-asset-actions
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Add downloaded asset inspection and actions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected 1 match, found {count}')
+              return text.replace(old, new, 1)
+
+          inspection_path = Path('src/inspection.rs')
+          inspection = inspection_path.read_text()
+
+          inspection = replace_once(
+              inspection,
+              'use crate::{load_audio_status, load_visual_status, AudioFlowStatus, StoredProject, TaskState};\n',
+              'use std::path::{Path, PathBuf};\n\nuse crate::{\n    load_audio_status, load_visual_status, AudioFlowStatus, PersistedAssetKind, StoredProject,\n    TaskState,\n};\n',
+              'inspection imports',
+          )
+
+          inspection = replace_once(
+              inspection,
+              '''#[derive(Debug, Clone, PartialEq, Eq)]
+          pub struct VisualRequestInspection {
+              pub id: String,
+              pub state: TaskState,
+              pub target_count: u32,
+              pub completed_assets: usize,
+              pub attempted_queries: Vec<String>,
+              pub successful_query: Option<String>,
+              pub last_error: Option<String>,
+          }
+          ''',
+              '''#[derive(Debug, Clone, PartialEq, Eq)]
+          pub struct VisualAssetInspection {
+              pub slot: u32,
+              pub kind: PersistedAssetKind,
+              pub provider: String,
+              pub provider_asset_id: String,
+              pub relative_path: String,
+              pub absolute_path: PathBuf,
+              pub bytes: u64,
+          }
+
+          #[derive(Debug, Clone, PartialEq, Eq)]
+          pub struct VisualRequestInspection {
+              pub id: String,
+              pub state: TaskState,
+              pub target_count: u32,
+              pub completed_assets: usize,
+              pub assets: Vec<VisualAssetInspection>,
+              pub attempted_queries: Vec<String>,
+              pub successful_query: Option<String>,
+              pub last_error: Option<String>,
+          }
+          ''',
+              'visual inspection structs',
+          )
+
+          inspection = replace_once(
+              inspection,
+              '''                            target_count: request.count,
+                                      completed_assets: stored.assets.len(),
+                                      attempted_queries: stored.attempted_queries.clone(),
+          ''',
+              '''                            target_count: request.count,
+                                      completed_assets: stored.assets.len(),
+                                      assets: stored
+                                          .assets
+                                          .iter()
+                                          .map(|asset| VisualAssetInspection {
+                                              slot: asset.slot,
+                                              kind: asset.kind,
+                                              provider: asset.provider.clone(),
+                                              provider_asset_id: asset.provider_asset_id.clone(),
+                                              relative_path: asset.relative_path.clone(),
+                                              absolute_path: absolute_asset_path(
+                                                  &project.root,
+                                                  &asset.relative_path,
+                                              ),
+                                              bytes: asset.bytes,
+                                          })
+                                          .collect(),
+                                      attempted_queries: stored.attempted_queries.clone(),
+          ''',
+              'visual asset mapping',
+          )
+
+          inspection = replace_once(
+              inspection,
+              'fn aggregate_project_state(visual: TaskState, audio: TaskState) -> TaskState {\n',
+              '''fn absolute_asset_path(project_root: &Path, relative_path: &str) -> PathBuf {
+              let path = project_root.join(relative_path);
+              if let Ok(canonical) = std::fs::canonicalize(&path) {
+                  return canonical;
+              }
+              if path.is_absolute() {
+                  return path;
+              }
+              std::env::current_dir()
+                  .map(|current| current.join(&path))
+                  .unwrap_or(path)
+          }
+
+          fn aggregate_project_state(visual: TaskState, audio: TaskState) -> TaskState {
+          ''',
+              'absolute asset path helper',
+          )
+
+          inspection = replace_once(
+              inspection,
+              '''        assert_eq!(scene.visual_requests[0].completed_assets, 1);
+                  assert_eq!(scene.visual_requests[0].target_count, 2);
+                  assert_eq!(scene.visual_requests[1].state, TaskState::Failed);
+          ''',
+              '''        assert_eq!(scene.visual_requests[0].completed_assets, 1);
+                  assert_eq!(scene.visual_requests[0].target_count, 2);
+                  assert_eq!(scene.visual_requests[0].assets.len(), 1);
+                  let asset = &scene.visual_requests[0].assets[0];
+                  assert_eq!(asset.slot, 1);
+                  assert_eq!(asset.kind, crate::PersistedAssetKind::Video);
+                  assert_eq!(asset.provider, "pexels");
+                  assert_eq!(asset.provider_asset_id, "42");
+                  assert_eq!(asset.relative_path, "dummy.mp4");
+                  assert!(asset.absolute_path.is_absolute());
+                  assert_eq!(asset.absolute_path, project.root.join("dummy.mp4"));
+                  assert_eq!(asset.bytes, 10);
+                  assert_eq!(scene.visual_requests[1].state, TaskState::Failed);
+          ''',
+              'inspection asset assertions',
+          )
+
+          inspection_path.write_text(inspection)
+
+          lib_path = Path('src/lib.rs')
+          lib = lib_path.read_text()
+          lib = replace_once(
+              lib,
+              '''    inspect_project, AudioAttemptInspection, AudioInspection, InspectionProblem, ProjectInspection,
+              SceneInspection, VisualRequestInspection,
+          ''',
+              '''    inspect_project, AudioAttemptInspection, AudioInspection, InspectionProblem, ProjectInspection,
+              SceneInspection, VisualAssetInspection, VisualRequestInspection,
+          ''',
+              'lib inspection exports',
+          )
+          lib_path.write_text(lib)
+
+          desktop_path = Path('src/desktop.rs')
+          desktop = desktop_path.read_text()
+
+          desktop = replace_once(
+              desktop,
+              '    path::PathBuf,\n',
+              '    path::{Path, PathBuf},\n',
+              'desktop path import',
+          )
+
+          desktop = replace_once(
+              desktop,
+              '''    manual_visual_status: String,
+              manual_visual_status_is_error: bool,
+          }
+          ''',
+              '''    manual_visual_status: String,
+              manual_visual_status_is_error: bool,
+              asset_action_status: String,
+              asset_action_status_is_error: bool,
+          }
+          ''',
+              'desktop asset action fields',
+          )
+
+          desktop = replace_once(
+              desktop,
+              '''            manual_visual_status: String::new(),
+                      manual_visual_status_is_error: false,
+                  };
+          ''',
+              '''            manual_visual_status: String::new(),
+                      manual_visual_status_is_error: false,
+                      asset_action_status: String::new(),
+                      asset_action_status_is_error: false,
+                  };
+          ''',
+              'desktop asset action init',
+          )
+
+          desktop = replace_once(
+              desktop,
+              '''        self.remote_reconcile_status.clear();
+                  self.remote_reconcile_status_is_error = false;
+                  self.selected_project = Some(project);
+          ''',
+              '''        self.remote_reconcile_status.clear();
+                  self.remote_reconcile_status_is_error = false;
+                  self.asset_action_status.clear();
+                  self.asset_action_status_is_error = false;
+                  self.selected_project = Some(project);
+          ''',
+              'desktop clear asset action status',
+          )
+
+          desktop = replace_once(
+              desktop,
+              '''      ui.add_space(16.0);
+                ui.heading(egui::RichText::new("Visual requests").size(20.0));
+                ui.add_space(6.0);
+                if !scene.visual_detail_available {
+          ''',
+              '''      ui.add_space(16.0);
+                ui.heading(egui::RichText::new("Visual requests").size(20.0));
+                ui.label(
+                    egui::RichText::new(
+                        "Downloaded and manually imported assets show their full local path here. Preview opens the file with the system default app; Go to folder reveals it in the file manager.",
+                    )
+                    .weak(),
+                );
+                if !self.asset_action_status.is_empty() {
+                    if self.asset_action_status_is_error {
+                        ui.colored_label(
+                            ui.visuals().error_fg_color,
+                            &self.asset_action_status,
+                        );
+                    } else {
+                        ui.label(&self.asset_action_status);
+                    }
+                }
+                ui.add_space(6.0);
+                if !scene.visual_detail_available {
+          ''',
+              'visual requests action status',
+          )
+
+          desktop = replace_once(
+              desktop,
+              '''                  if let Some(error) = &request.last_error {
+                                ui.colored_label(ui.visuals().error_fg_color, error);
+                            }
+                            if request.completed_assets < target {
+          ''',
+              '''                  if let Some(error) = &request.last_error {
+                                ui.colored_label(ui.visuals().error_fg_color, error);
+                            }
+                            if !request.assets.is_empty() {
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new("Local assets").strong());
+                                for asset in &request.assets {
+                                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.strong(format!(
+                                                "Slot {} · {:?}",
+                                                asset.slot, asset.kind
+                                            ));
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{} · {} bytes · provider asset {}",
+                                                    asset.provider, asset.bytes, asset.provider_asset_id
+                                                ))
+                                                .weak(),
+                                            );
+                                        });
+                                        ui.small(format!("Relative path: {}", asset.relative_path));
+                                        ui.label(egui::RichText::new("Full path").strong());
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(
+                                                    asset.absolute_path.display().to_string(),
+                                                )
+                                                .monospace(),
+                                            )
+                                            .wrap(),
+                                        );
+                                        ui.horizontal_wrapped(|ui| {
+                                            if ui.button("Preview").clicked() {
+                                                match open_asset_preview(&asset.absolute_path) {
+                                                    Ok(()) => {
+                                                        self.asset_action_status = format!(
+                                                            "Opened preview: {}",
+                                                            asset.absolute_path.display()
+                                                        );
+                                                        self.asset_action_status_is_error = false;
+                                                    }
+                                                    Err(error) => {
+                                                        self.asset_action_status = error;
+                                                        self.asset_action_status_is_error = true;
+                                                    }
+                                                }
+                                            }
+                                            if ui.button("Go to folder").clicked() {
+                                                match reveal_asset_in_folder(&asset.absolute_path) {
+                                                    Ok(()) => {
+                                                        self.asset_action_status = format!(
+                                                            "Revealed asset: {}",
+                                                            asset.absolute_path.display()
+                                                        );
+                                                        self.asset_action_status_is_error = false;
+                                                    }
+                                                    Err(error) => {
+                                                        self.asset_action_status = error;
+                                                        self.asset_action_status_is_error = true;
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    });
+                                    ui.add_space(6.0);
+                                }
+                            }
+                            if request.completed_assets < target {
+          ''',
+              'visual asset cards',
+          )
+
+          desktop = replace_once(
+              desktop,
+              'fn pick_data_root_folder(current: &str) -> Result<Option<PathBuf>, String> {\n',
+              '''fn open_asset_preview(path: &Path) -> Result<(), String> {
+              if !path.is_file() {
+                  return Err(format!("Asset file does not exist: {}", path.display()));
+              }
+
+              #[cfg(target_os = "macos")]
+              {
+                  return Command::new("open")
+                      .arg(path)
+                      .spawn()
+                      .map(|_| ())
+                      .map_err(|error| format!("failed to open asset preview: {error}"));
+              }
+
+              #[cfg(target_os = "windows")]
+              {
+                  return Command::new("cmd.exe")
+                      .args(["/C", "start", ""])
+                      .arg(path)
+                      .spawn()
+                      .map(|_| ())
+                      .map_err(|error| format!("failed to open asset preview: {error}"));
+              }
+
+              #[cfg(target_os = "linux")]
+              {
+                  return Command::new("xdg-open")
+                      .arg(path)
+                      .spawn()
+                      .map(|_| ())
+                      .map_err(|error| format!("failed to open asset preview: {error}"));
+              }
+
+              #[allow(unreachable_code)]
+              Err("asset preview is not supported on this platform".to_owned())
+          }
+
+          fn reveal_asset_in_folder(path: &Path) -> Result<(), String> {
+              if !path.is_file() {
+                  return Err(format!("Asset file does not exist: {}", path.display()));
+              }
+
+              #[cfg(target_os = "macos")]
+              {
+                  return Command::new("open")
+                      .arg("-R")
+                      .arg(path)
+                      .spawn()
+                      .map(|_| ())
+                      .map_err(|error| format!("failed to reveal asset in Finder: {error}"));
+              }
+
+              #[cfg(target_os = "windows")]
+              {
+                  return Command::new("explorer.exe")
+                      .arg("/select,")
+                      .arg(path)
+                      .spawn()
+                      .map(|_| ())
+                      .map_err(|error| format!("failed to reveal asset in Explorer: {error}"));
+              }
+
+              #[cfg(target_os = "linux")]
+              {
+                  let parent = path.parent().ok_or_else(|| {
+                      format!("asset has no parent folder: {}", path.display())
+                  })?;
+                  return Command::new("xdg-open")
+                      .arg(parent)
+                      .spawn()
+                      .map(|_| ())
+                      .map_err(|error| format!("failed to open asset folder: {error}"));
+              }
+
+              #[allow(unreachable_code)]
+              Err("revealing an asset is not supported on this platform".to_owned())
+          }
+
+          fn pick_data_root_folder(current: &str) -> Result<Option<PathBuf>, String> {
+          ''',
+              'asset OS actions',
+          )
+
+          desktop_path.write_text(desktop)
+          PY
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Check all targets
+        run: cargo check --locked --all-targets --all-features
+
+      - name: Run tests
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Verify release build
+        run: cargo build --locked --release
+
+      - name: Commit feature source
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/inspection.rs src/lib.rs src/desktop.rs
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit.'
+            exit 1
+          fi
+          git commit -m 'feat: expose downloaded asset paths and actions'
+          git push origin HEAD:feat/downloaded-asset-actions
