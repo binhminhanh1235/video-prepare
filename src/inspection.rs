@@ -1,7 +1,4 @@
-use crate::{
-    load_audio_status, load_visual_status, AudioFlowStatus, StoredProject, TaskState,
-    VisualFlowStatus,
-};
+use crate::{load_audio_status, load_visual_status, AudioFlowStatus, StoredProject, TaskState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionProblem {

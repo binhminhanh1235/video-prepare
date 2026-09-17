@@ -147,8 +147,11 @@ pub fn import_manual_visual_asset(
             scene_id: scene_id.to_owned(),
             visual_id: visual_id.to_owned(),
         })?;
-    let request = &project.prepared_script.scenes[scene_index].visuals[request_index];
-    ensure_media_compatible(request.media, kind)?;
+    let (request_media, request_count) = {
+        let request = &project.prepared_script.scenes[scene_index].visuals[request_index];
+        (request.media, request.count)
+    };
+    ensure_media_compatible(request_media, kind)?;
 
     reconcile_local_project(project)?;
     let mut status = load_visual_status(project)?;
@@ -179,14 +182,14 @@ pub fn import_manual_visual_asset(
         ));
     }
 
-    if request_status.assets.len() >= request.count as usize {
+    if request_status.assets.len() >= request_count as usize {
         return Err(ManualVisualError::RequestAlreadyComplete {
             scene_id: scene_id.to_owned(),
             visual_id: visual_id.to_owned(),
         });
     }
 
-    let slot = next_missing_slot(&request_status.assets, request.count);
+    let slot = next_missing_slot(&request_status.assets, request_count);
     let hash_prefix = source_proof
         .sha256
         .get(..8)
@@ -259,7 +262,7 @@ pub fn import_manual_visual_asset(
         .sort_by_key(|candidate| candidate.slot);
     request_status.successful_query = None;
     request_status.last_error = None;
-    request_status.state = if request_status.assets.len() >= request.count as usize {
+    request_status.state = if request_status.assets.len() >= request_count as usize {
         TaskState::Completed
     } else {
         TaskState::Partial
