@@ -8,6 +8,7 @@ pub mod project;
 pub mod project_catalog;
 pub mod providers;
 pub mod reconciliation;
+pub mod remote_reconciliation;
 pub mod script;
 pub mod settings;
 pub mod visual;
@@ -53,6 +54,10 @@ pub use providers::{
 };
 pub use reconciliation::{
     reconcile_local_project, LocalReconciliationError, LocalReconciliationReport,
+};
+pub use remote_reconciliation::{
+    reconcile_remote_audio, RemoteAudioDisposition, RemoteAudioReconciliationError,
+    RemoteAudioReconciliationReport,
 };
 pub use script::{
     parse_script, MediaKind, OmniVoiceScript, OmniVoiceSection, PreparedScript, SceneSpec,
