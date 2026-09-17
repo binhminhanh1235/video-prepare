@@ -2026,7 +2026,7 @@ fn pick_data_root_folder_macos() -> Result<Option<PathBuf>, String> {
     let output = Command::new("osascript")
         .args([
             "-e",
-            r#"POSIX path of (choose folder with prompt \"Choose Video Prepare Data Root\")"#,
+            r#"POSIX path of (choose folder with prompt "Choose Video Prepare Data Root")"#,
         ])
         .output()
         .map_err(|error| format!("failed to launch macOS folder chooser: {error}"))?;
