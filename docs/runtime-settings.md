@@ -40,6 +40,14 @@ UI phai hien thi path `Loaded from` / `Will save to`, revision da load va secure
 
 `OmniVoice URL` chap nhan ca service root va public REST URL ket thuc bang `/api/v1`; app normalize `/api/v1` ve service root de user co the paste truc tiep URL OmniVoice Studio in ra luc startup.
 
+Acceptance smoke test:
+
+1. doi it nhat Data Root + flow toggle + OmniVoice URL;
+2. bam `Apply settings` va thay exact path `preferences.json` da save;
+3. dong app hoan toan, mo lai app;
+4. UI phai hien `Loaded from`, revision da persist va cac non-secret field dung gia tri truoc khi dong app;
+5. tren macOS/Windows, API key/token da save phai duoc restore tu OS credential store ma khong xuat hien trong `preferences.json`.
+
 ## 2. Settings groups
 
 ### Project
@@ -161,12 +169,25 @@ Normalize thanh:
 https://abc.trycloudflare.com
 ```
 
+Public REST URL cung duoc chap nhan:
+
+```text
+https://abc.trycloudflare.com/api/v1
+```
+
+va normalize ve:
+
+```text
+https://abc.trycloudflare.com
+```
+
 Reject:
 
 - empty URL;
 - unsupported scheme;
 - URL co credentials embedded neu policy v1 khong support;
-- malformed URL.
+- malformed URL;
+- path khac service root hoac `/api/v1`.
 
 Khuyen nghi chi chap nhan `http`/`https`, trong do public Kaggle/Colab nen dung `https`.
 
@@ -261,14 +282,21 @@ Linux   $XDG_CONFIG_HOME/video-prepare/preferences.json
 
 Co the override config directory bang `VIDEO_PREPARE_CONFIG_DIR`, huu ich cho test hoac portable deployment.
 
-Secrets van memory-only va KHONG ghi vao preferences file:
+`preferences.json` chi chua non-secret settings, schema version va applied revision. File nay khong duoc chua:
 
 ```text
 Pexels API Key
 OmniVoice API Token
 ```
 
-Neu can remember secret trong future, dung OS credential store thay vi plaintext app config.
+Secret persistence:
+
+- macOS: luu/restore qua Keychain;
+- Windows: luu/restore qua Windows credential store;
+- Linux: hien tai session-only; khong fallback sang plaintext config;
+- neu OS credential store fail, Apply van persist non-secret settings va UI hien warning ro rang.
+
+Loader phai backward-compatible voi format `SafePreferences` plain JSON cu. Khi load legacy file, revision co the bat dau tu 0; sau lan Apply tiep theo file duoc nang len format versioned moi.
 
 ## 9. UI sketch
 
@@ -355,4 +383,6 @@ Neu project import tren server moi la idempotent theo `project_id + source_hash`
 - khong log Pexels key;
 - khong ghi secret trong crash report;
 - khong chen secret vao URL query string;
-- neu can persist future, dung OS credential store.
+- khong ghi secret vao `preferences.json`;
+- macOS/Windows persist secret bang OS credential store;
+- Linux giu secret session-only cho den khi co secure credential backend tuong duong.
