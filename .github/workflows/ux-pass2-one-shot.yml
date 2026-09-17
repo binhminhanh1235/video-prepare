@@ -1,0 +1,44 @@
+name: one-shot UX usability pass 2
+
+on:
+  push:
+    branches:
+      - feat/ux-consolidation-workspace
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/ux-consolidation-workspace
+          fetch-depth: 0
+
+      - name: Apply UX pass 2 patch
+        run: python3 .github/scripts/ux_pass2.py
+
+      - name: Format
+        run: cargo fmt --all --check || (cargo fmt --all && cargo fmt --all --check)
+
+      - name: Check
+        run: cargo check --locked --all-targets --all-features
+
+      - name: Test
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Commit implementation and remove one-shot files
+        shell: bash
+        run: |
+          rm -f .github/workflows/ux-pass2-one-shot.yml .github/scripts/ux_pass2.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "feat: improve project discovery and progressive UX"
+            git push origin HEAD:feat/ux-consolidation-workspace
+          fi
