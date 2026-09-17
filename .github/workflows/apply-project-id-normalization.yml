@@ -2,14 +2,15 @@ name: Apply project ID normalization
 
 on:
   push:
-    branches: [feat/normalize-project-id-spaces]
+    branches:
+      - "feat/normalize-project-id-spaces"
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,7 +103,7 @@ mod desktop_tests {
             "HashMap-Deep-Dive"
         );
         assert_eq!(
-            normalize_project_id_input("  HashMap   Deep\\tDive  "),
+            normalize_project_id_input("  HashMap   Deep\tDive  "),
             "HashMap-Deep-Dive"
         );
         assert_eq!(
@@ -118,7 +119,9 @@ mod desktop_tests {
           text = text.replace(anchor, helper, 1)
           path.write_text(text)
           PY
-      - name: Format
+      - name: Format implementation
+        run: cargo fmt --all
+      - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Test
         run: cargo test --locked --all-targets --all-features
@@ -126,7 +129,6 @@ mod desktop_tests {
         shell: bash
         run: |
           rm .github/workflows/apply-project-id-normalization.yml
-          cargo fmt --all
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/desktop.rs .github/workflows/apply-project-id-normalization.yml
