@@ -7,6 +7,7 @@ pub mod orchestration;
 pub mod project;
 pub mod project_catalog;
 pub mod providers;
+pub mod reconciliation;
 pub mod script;
 pub mod settings;
 pub mod visual;
@@ -49,6 +50,9 @@ pub use providers::{
     OmniVoiceJobSubmission, OmniVoiceProvider, OmniVoiceRemoteJob, PexelsProvider,
     ProviderConnection, RateLimitMetadata, StockAssetCandidate, StockProvider, StockProviderError,
     StockRendition, StockSearchPage, StockSearchRequest,
+};
+pub use reconciliation::{
+    reconcile_local_project, LocalReconciliationError, LocalReconciliationReport,
 };
 pub use script::{
     parse_script, MediaKind, OmniVoiceScript, OmniVoiceSection, PreparedScript, SceneSpec,

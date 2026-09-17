@@ -5,7 +5,10 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{parse_script, ProjectError, ProjectStore, StoredProject, TaskState};
+use crate::{
+    parse_script, reconcile_local_project, LocalReconciliationError, ProjectError, ProjectStore,
+    StoredProject, TaskState,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectSummary {
@@ -81,6 +84,9 @@ pub enum ProjectActionError {
 
     #[error(transparent)]
     Project(#[from] ProjectError),
+
+    #[error(transparent)]
+    Reconciliation(#[from] LocalReconciliationError),
 }
 
 pub fn discover_projects(
@@ -121,7 +127,15 @@ pub fn discover_projects(
         }
 
         match ProjectStore::open(&path) {
-            Ok(project) => catalog.projects.push(ProjectSummary::from(&project)),
+            Ok(mut project) => {
+                if let Err(error) = reconcile_local_project(&mut project) {
+                    catalog.errors.push(ProjectDiscoveryError {
+                        root: path.clone(),
+                        message: format!("local reconciliation failed: {error}"),
+                    });
+                }
+                catalog.projects.push(ProjectSummary::from(&project));
+            }
             Err(error) => catalog.errors.push(ProjectDiscoveryError {
                 root: path,
                 message: error.to_string(),
@@ -161,8 +175,12 @@ pub fn create_project_from_script_path(
 pub fn open_project_from_data_root(
     data_root: impl AsRef<Path>,
     project_id: &str,
-) -> Result<StoredProject, ProjectError> {
-    ProjectStore::new(data_root.as_ref()).load(project_id)
+) -> Result<StoredProject, ProjectActionError> {
+    let mut project = ProjectStore::new(data_root.as_ref())
+        .load(project_id)
+        .map_err(ProjectActionError::from)?;
+    reconcile_local_project(&mut project)?;
+    Ok(project)
 }
 
 #[cfg(test)]
