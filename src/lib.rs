@@ -51,8 +51,9 @@ pub use project::{
     TaskState, PROJECT_SCHEMA_VERSION, STATUS_SCHEMA_VERSION,
 };
 pub use project_catalog::{
-    create_project_from_script_path, discover_projects, open_project_from_data_root,
-    ProjectActionError, ProjectCatalog, ProjectCatalogError, ProjectDiscoveryError, ProjectSummary,
+    create_project_from_script_path, create_project_from_script_text, discover_projects,
+    open_project_from_data_root, ProjectActionError, ProjectCatalog, ProjectCatalogError,
+    ProjectDiscoveryError, ProjectSummary,
 };
 pub use providers::{
     AssetKind, CreatorAttribution, GenerateProjectOptions, OmniVoiceArtifact,
