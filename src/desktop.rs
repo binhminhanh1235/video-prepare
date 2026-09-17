@@ -1,4 +1,6 @@
 use std::{
+    collections::HashMap,
+    fs,
     path::{Path, PathBuf},
     process::Command,
     sync::mpsc::{self, Receiver, TryRecvError},
@@ -146,6 +148,15 @@ struct ManualVisualWorker {
     visual_id: String,
 }
 
+enum ThumbnailCacheEntry {
+    Ready {
+        texture: egui::TextureHandle,
+        source_width: u32,
+        source_height: u32,
+    },
+    Failed(String),
+}
+
 pub struct VideoPrepareApp {
     settings: RuntimeSettingsStore,
     draft: RuntimeSettingsDraft,
@@ -195,6 +206,7 @@ pub struct VideoPrepareApp {
     asset_action_status_is_error: bool,
     workspace_action_status: String,
     workspace_action_status_is_error: bool,
+    thumbnail_cache: HashMap<PathBuf, ThumbnailCacheEntry>,
 }
 
 impl Default for VideoPrepareApp {
@@ -286,6 +298,7 @@ impl Default for VideoPrepareApp {
             asset_action_status_is_error: false,
             workspace_action_status: String::new(),
             workspace_action_status_is_error: false,
+            thumbnail_cache: HashMap::new(),
         };
         app.refresh_projects();
         app
@@ -299,6 +312,7 @@ impl eframe::App for VideoPrepareApp {
         self.poll_remote_reconcile_worker(ctx);
         self.poll_connection_worker(ctx);
         self.poll_manual_visual_worker(ctx);
+        self.handle_dropped_vprep(ctx);
 
         egui::TopBottomPanel::top("top-nav").show(ctx, |ui| {
             ui.add_space(6.0);
@@ -407,10 +421,37 @@ impl VideoPrepareApp {
                     ui.heading(egui::RichText::new("New project").size(20.0));
                     ui.label(
                         egui::RichText::new(
-                            "Paste is the preferred input. File import stays available as a fallback.",
+                            "Paste is the preferred input. You can also choose or drag a .vprep file into the app.",
                         )
                         .weak(),
                     );
+                    let hovering_vprep = ui.ctx().input(|input| {
+                        input.raw.hovered_files.iter().any(|file| {
+                            file.path.as_ref().is_some_and(|path| is_vprep_path(path))
+                        })
+                    });
+                    egui::Frame::group(ui.style())
+                        .fill(if hovering_vprep {
+                            ui.visuals().selection.bg_fill
+                        } else {
+                            ui.visuals().faint_bg_color
+                        })
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.strong(if hovering_vprep {
+                                    "Release to load .vprep"
+                                } else {
+                                    "Drop .vprep here"
+                                });
+                                ui.label(
+                                    egui::RichText::new(
+                                        "The file is loaded into the editor so you can review or edit it before creating the project.",
+                                    )
+                                    .weak(),
+                                );
+                            });
+                        });
                     ui.add_space(10.0);
 
                     ui.label(egui::RichText::new("Project ID").strong());
@@ -443,28 +484,90 @@ impl VideoPrepareApp {
                             .hint_text("Paste your structured .vprep script here..."),
                     );
 
-                    if !self.create_script_text.trim().is_empty() {
+                    let parsed_create_script = if self.create_script_text.trim().is_empty() {
+                        None
+                    } else {
+                        Some(crate::parse_script(self.create_script_text.trim()))
+                    };
+                    if let Some(result) = &parsed_create_script {
                         ui.add_space(8.0);
-                        match crate::parse_script(self.create_script_text.trim()) {
+                        match result {
                             Ok(script) => {
                                 if self.create_project_id.trim().is_empty() {
                                     self.create_project_id = slugify_project_id(&script.omnivoice.title);
                                 }
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "✓ Valid script · {} · {} scenes · {} narration sections",
-                                        script.omnivoice.title,
-                                        script.scenes.len(),
-                                        script.omnivoice.sections.len()
-                                    ))
-                                    .color(egui::Color32::from_rgb(134, 239, 172)),
-                                );
+                                let visual_requests: usize =
+                                    script.scenes.iter().map(|scene| scene.visuals.len()).sum();
+                                let requested_assets: u32 = script
+                                    .scenes
+                                    .iter()
+                                    .flat_map(|scene| scene.visuals.iter())
+                                    .map(|visual| visual.count)
+                                    .sum();
+                                let duration_seconds = script
+                                    .omnivoice
+                                    .sections
+                                    .last()
+                                    .map(|section| section.end_seconds)
+                                    .unwrap_or_default();
+
+                                egui::Frame::group(ui.style()).show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("✓ Script ready")
+                                                .strong()
+                                                .color(egui::Color32::from_rgb(134, 239, 172)),
+                                        );
+                                        ui.label(egui::RichText::new(&script.omnivoice.title).strong());
+                                    });
+                                    ui.add_space(4.0);
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(format!("{} scenes", script.scenes.len()));
+                                        ui.separator();
+                                        ui.label(format!("{visual_requests} visual requests"));
+                                        ui.separator();
+                                        ui.label(format!("{requested_assets} requested assets"));
+                                        ui.separator();
+                                        ui.label(format!(
+                                            "{} narration sections",
+                                            script.omnivoice.sections.len()
+                                        ));
+                                        ui.separator();
+                                        ui.label(format!(
+                                            "{} timeline",
+                                            format_duration(duration_seconds)
+                                        ));
+                                    });
+                                    ui.collapsing("Scene IDs", |ui| {
+                                        ui.label(
+                                            egui::RichText::new(
+                                                script
+                                                    .scenes
+                                                    .iter()
+                                                    .map(|scene| scene.id.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(" · "),
+                                            )
+                                            .monospace(),
+                                        );
+                                    });
+                                });
                             }
                             Err(error) => {
-                                ui.colored_label(
-                                    ui.visuals().error_fg_color,
-                                    format!("Script needs attention: {error}"),
-                                );
+                                egui::Frame::group(ui.style()).show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.colored_label(
+                                        ui.visuals().error_fg_color,
+                                        format!("Script needs attention: {} · {error}", error.code()),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Fix the script in the editor above. Project creation stays disabled until validation passes.",
+                                        )
+                                        .weak(),
+                                    );
+                                });
                             }
                         }
                     }
@@ -495,7 +598,7 @@ impl VideoPrepareApp {
                             {
                                 match pick_vprep_file() {
                                     Ok(Some(path)) => {
-                                        self.create_script_path = path.to_string_lossy().into_owned();
+                                        self.load_vprep_into_create_form(path);
                                     }
                                     Ok(None) => {}
                                     Err(error) => {
@@ -510,6 +613,9 @@ impl VideoPrepareApp {
                     let pasted_ready = !self.create_script_text.trim().is_empty();
                     let file_ready = !self.create_script_path.trim().is_empty();
                     let id_ready = !self.create_project_id.trim().is_empty();
+                    let script_valid = parsed_create_script
+                        .as_ref()
+                        .is_some_and(|result| result.is_ok());
                     if pasted_ready && file_ready {
                         ui.label(
                             egui::RichText::new(
@@ -522,7 +628,7 @@ impl VideoPrepareApp {
                     ui.add_space(10.0);
                     if ui
                         .add_enabled(
-                            id_ready && (pasted_ready || file_ready),
+                            id_ready && script_valid && (pasted_ready || file_ready),
                             egui::Button::new(egui::RichText::new("Create project").strong()),
                         )
                         .clicked()
@@ -1402,22 +1508,52 @@ impl VideoPrepareApp {
                                   crate::PersistedAssetKind::Image => ("▣", "IMAGE"),
                                   crate::PersistedAssetKind::Video => ("▶", "VIDEO"),
                               };
+                              let thumbnail = if asset.kind == crate::PersistedAssetKind::Image {
+                                  Some(self.image_thumbnail(ui.ctx(), &asset.absolute_path))
+                              } else {
+                                  None
+                              };
                               ui.horizontal(|ui| {
                                   egui::Frame::group(ui.style()).show(ui, |ui| {
-                                      ui.set_min_size(egui::vec2(118.0, 74.0));
+                                      ui.set_min_size(egui::vec2(188.0, 112.0));
                                       ui.vertical_centered(|ui| {
-                                          ui.add_space(6.0);
-                                          ui.label(egui::RichText::new(media_icon).size(28.0));
-                                          ui.label(egui::RichText::new(media_label).strong().small());
+                                          match &thumbnail {
+                                              Some(Ok((texture, _, _))) => {
+                                                  ui.image((texture.id(), texture.size_vec2()));
+                                              }
+                                              Some(Err(error)) => {
+                                                  ui.add_space(12.0);
+                                                  ui.label(egui::RichText::new(media_icon).size(28.0));
+                                                  ui.label(
+                                                      egui::RichText::new("PREVIEW UNAVAILABLE")
+                                                          .strong()
+                                                          .small(),
+                                                  )
+                                                  .on_hover_text(error);
+                                              }
+                                              None => {
+                                                  ui.add_space(12.0);
+                                                  ui.label(egui::RichText::new(media_icon).size(28.0));
+                                                  ui.label(
+                                                      egui::RichText::new(media_label).strong().small(),
+                                                  );
+                                              }
+                                          }
                                       });
                                   });
                                   ui.vertical(|ui| {
                                       ui.strong(file_name);
+                                      let dimensions = thumbnail
+                                          .as_ref()
+                                          .and_then(|result| result.as_ref().ok())
+                                          .map(|(_, width, height)| format!(" · {width}×{height}"))
+                                          .unwrap_or_default();
                                       ui.label(
                                           egui::RichText::new(format!(
-                                              "Slot {} · {}",
+                                              "Slot {} · {}{}",
                                               asset.slot,
-                                              format_bytes(asset.bytes)
+                                              format_bytes(asset.bytes),
+                                              dimensions
                                           ))
                                           .weak(),
                                       );
@@ -2650,6 +2786,128 @@ impl VideoPrepareApp {
             }
         }
     }
+
+    fn handle_dropped_vprep(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|input| input.raw.dropped_files.clone());
+        let Some(path) = dropped
+            .into_iter()
+            .filter_map(|file| file.path)
+            .find(|path| is_vprep_path(path))
+        else {
+            return;
+        };
+
+        self.load_vprep_into_create_form(path);
+    }
+
+    fn load_vprep_into_create_form(&mut self, path: PathBuf) {
+        self.screen = Screen::Projects;
+        self.show_create_project = true;
+        self.create_script_path = path.to_string_lossy().into_owned();
+
+        match fs::read_to_string(&path) {
+            Ok(script_text) => {
+                self.create_script_text = script_text;
+                match crate::parse_script(self.create_script_text.trim()) {
+                    Ok(script) => {
+                        if self.create_project_id.trim().is_empty() {
+                            self.create_project_id = slugify_project_id(&script.omnivoice.title);
+                        }
+                        self.project_status = format!(
+                            "Loaded {} into the editor. Review it, then create the project when ready.",
+                            path.display()
+                        );
+                        self.project_status_is_error = false;
+                    }
+                    Err(error) => {
+                        self.project_status = format!(
+                            "Loaded {}, but validation needs attention: {} · {error}",
+                            path.display(),
+                            error.code()
+                        );
+                        self.project_status_is_error = true;
+                    }
+                }
+            }
+            Err(error) => {
+                self.project_status = format!(
+                    "Could not read dropped .vprep file {}: {error}",
+                    path.display()
+                );
+                self.project_status_is_error = true;
+            }
+        }
+    }
+
+    fn image_thumbnail(
+        &mut self,
+        ctx: &egui::Context,
+        path: &Path,
+    ) -> Result<(egui::TextureHandle, u32, u32), String> {
+        if !self.thumbnail_cache.contains_key(path) {
+            const MAX_THUMBNAIL_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+            let result = (|| -> Result<(egui::TextureHandle, u32, u32), String> {
+                let metadata = fs::metadata(path).map_err(|error| {
+                    format!(
+                        "Could not read image metadata for {}: {error}",
+                        path.display()
+                    )
+                })?;
+                if metadata.len() > MAX_THUMBNAIL_SOURCE_BYTES {
+                    return Err(format!(
+                        "Image preview skipped because {} is larger than 32 MB.",
+                        path.display()
+                    ));
+                }
+
+                let decoded = image::ImageReader::open(path)
+                    .map_err(|error| format!("Could not open image {}: {error}", path.display()))?
+                    .with_guessed_format()
+                    .map_err(|error| {
+                        format!(
+                            "Could not detect image format for {}: {error}",
+                            path.display()
+                        )
+                    })?
+                    .decode()
+                    .map_err(|error| {
+                        format!("Could not decode image {}: {error}", path.display())
+                    })?;
+                let source_width = decoded.width();
+                let source_height = decoded.height();
+                let thumbnail = decoded.thumbnail(180, 104).to_rgba8();
+                let size = [thumbnail.width() as usize, thumbnail.height() as usize];
+                let color_image =
+                    egui::ColorImage::from_rgba_unmultiplied(size, thumbnail.as_raw());
+                let texture = ctx.load_texture(
+                    format!("asset-thumbnail:{}", path.display()),
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                );
+                Ok((texture, source_width, source_height))
+            })();
+
+            let entry = match result {
+                Ok((texture, source_width, source_height)) => ThumbnailCacheEntry::Ready {
+                    texture,
+                    source_width,
+                    source_height,
+                },
+                Err(error) => ThumbnailCacheEntry::Failed(error),
+            };
+            self.thumbnail_cache.insert(path.to_path_buf(), entry);
+        }
+
+        match self.thumbnail_cache.get(path) {
+            Some(ThumbnailCacheEntry::Ready {
+                texture,
+                source_width,
+                source_height,
+            }) => Ok((texture.clone(), *source_width, *source_height)),
+            Some(ThumbnailCacheEntry::Failed(error)) => Err(error.clone()),
+            None => Err("thumbnail cache entry disappeared unexpectedly".to_owned()),
+        }
+    }
 }
 
 fn open_asset_preview(path: &Path) -> Result<(), String> {
@@ -2953,6 +3211,23 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 
     #[allow(unreachable_code)]
     Err("system file chooser is not supported on this platform".to_owned())
+}
+
+fn is_vprep_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("vprep"))
+}
+
+fn format_duration(total_seconds: u64) -> String {
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -3367,5 +3642,19 @@ mod ui_logic_tests {
         assert_eq!(format_bytes(512), "512 B");
         assert_eq!(format_bytes(2048), "2.0 KB");
         assert_eq!(format_bytes(2 * 1024 * 1024), "2.0 MB");
+    }
+
+    #[test]
+    fn drag_drop_accepts_vprep_extension_case_insensitively() {
+        assert!(is_vprep_path(Path::new("script.vprep")));
+        assert!(is_vprep_path(Path::new("SCRIPT.VPREP")));
+        assert!(!is_vprep_path(Path::new("script.yaml")));
+    }
+
+    #[test]
+    fn timeline_duration_is_compact_and_readable() {
+        assert_eq!(format_duration(0), "0:00");
+        assert_eq!(format_duration(65), "1:05");
+        assert_eq!(format_duration(3661), "1:01:01");
     }
 }
