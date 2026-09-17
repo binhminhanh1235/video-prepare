@@ -12,7 +12,8 @@ use thiserror::Error;
 use crate::{
     load_visual_status, reconcile_local_project, visual_status_path, LocalReconciliationError,
     MediaKind, PersistedAssetKind, ProjectError, ProjectStore, ProvenanceCreator,
-    ProvenanceRendition, StoredProject, TaskState, VisualAssetStatus, VisualError, VisualFlowStatus,
+    ProvenanceRendition, StoredProject, TaskState, VisualAssetStatus, VisualError,
+    VisualFlowStatus,
 };
 
 pub const MANUAL_VISUAL_PROVENANCE_SCHEMA_VERSION: u32 = 1;
@@ -123,7 +124,9 @@ pub fn import_manual_visual_asset(
         }
     })?;
     if !metadata.is_file() {
-        return Err(ManualVisualError::SourceNotFile(source_path.to_path_buf()));
+        return Err(ManualVisualError::SourceNotFile(
+            source_path.to_path_buf(),
+        ));
     }
     if metadata.len() == 0 {
         return Err(ManualVisualError::EmptySource(source_path.to_path_buf()));
@@ -157,9 +160,11 @@ pub fn import_manual_visual_asset(
         .scenes
         .get(scene_index)
         .and_then(|scene| scene.requests.get(request_index))
-        .ok_or_else(|| ManualVisualError::InvalidState(
-            "visual-status shape no longer matches the prepared script".to_owned(),
-        ))?;
+        .ok_or_else(|| {
+            ManualVisualError::InvalidState(
+                "visual-status shape no longer matches the prepared script".to_owned(),
+            )
+        })?;
 
     if let Some(existing) = request_status.assets.iter().find(|asset| {
         asset.sha256 == source_proof.sha256
@@ -245,11 +250,15 @@ pub fn import_manual_visual_asset(
         .scenes
         .get_mut(scene_index)
         .and_then(|scene| scene.requests.get_mut(request_index))
-        .ok_or_else(|| ManualVisualError::InvalidState(
-            "visual-status shape no longer matches the prepared script".to_owned(),
-        ))?;
+        .ok_or_else(|| {
+            ManualVisualError::InvalidState(
+                "visual-status shape no longer matches the prepared script".to_owned(),
+            )
+        })?;
     request_status.assets.push(asset.clone());
-    request_status.assets.sort_by_key(|candidate| candidate.slot);
+    request_status
+        .assets
+        .sort_by_key(|candidate| candidate.slot);
     request_status.successful_query = None;
     request_status.last_error = None;
     request_status.state = if request_status.assets.len() >= request.count as usize {
@@ -284,7 +293,9 @@ fn build_summary(
     ManualVisualImportSummary {
         project_id: project.metadata.project_id.clone(),
         scene_id: status.scenes[scene_index].id.clone(),
-        visual_id: status.scenes[scene_index].requests[request_index].id.clone(),
+        visual_id: status.scenes[scene_index].requests[request_index]
+            .id
+            .clone(),
         slot: asset.slot,
         kind: asset.kind,
         relative_path: asset.relative_path,
@@ -437,10 +448,12 @@ fn file_proof(path: &Path) -> Result<FileProof, ManualVisualError> {
     let mut bytes = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buffer).map_err(|source| ManualVisualError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        let read = file
+            .read(&mut buffer)
+            .map_err(|source| ManualVisualError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
         if read == 0 {
             break;
         }
@@ -470,11 +483,9 @@ fn copy_verified_atomic(
             destination.to_path_buf(),
         ));
     }
-    let parent = destination
-        .parent()
-        .ok_or_else(|| ManualVisualError::InvalidState(
-            "manual visual destination has no parent".to_owned(),
-        ))?;
+    let parent = destination.parent().ok_or_else(|| {
+        ManualVisualError::InvalidState("manual visual destination has no parent".to_owned())
+    })?;
     fs::create_dir_all(parent).map_err(|source| ManualVisualError::Io {
         path: parent.to_path_buf(),
         source,
@@ -566,7 +577,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        AssetDownloadError, AssetDownloader, CreatorAttribution, DownloadReceipt, ProviderConnection,
+        AssetDownloadError, AssetDownloader, CreatorAttribution, DownloadReceipt,
         RateLimitMetadata, StockAssetCandidate, StockProvider, StockProviderError, StockRendition,
         StockSearchPage, StockSearchRequest, VisualExecutor,
     };
@@ -617,7 +628,8 @@ Manual narration.
         let status = load_visual_status(&project).unwrap();
         let asset = &status.scenes[0].requests[0].assets[0];
         assert_eq!(asset.provider, "manual");
-        let provenance = fs::read_to_string(project.root.join(&asset.provenance_relative_path)).unwrap();
+        let provenance =
+            fs::read_to_string(project.root.join(&asset.provenance_relative_path)).unwrap();
         assert!(provenance.contains("\"source\": \"manual\""));
         assert!(provenance.contains("manual://imported"));
         assert!(!provenance.contains(source.to_string_lossy().as_ref()));
@@ -718,10 +730,6 @@ Manual narration.
             _request: &StockSearchRequest,
         ) -> Result<StockSearchPage, StockProviderError> {
             unreachable!("image-only test")
-        }
-
-        fn test_connection(&self) -> Result<ProviderConnection, StockProviderError> {
-            unreachable!("visual resume does not test provider connection")
         }
     }
 
