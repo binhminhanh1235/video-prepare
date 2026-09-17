@@ -1,0 +1,768 @@
+name: one-shot UX consolidation
+
+on:
+  push:
+    branches:
+      - feat/ux-consolidation-workspace
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/ux-consolidation-workspace
+          fetch-depth: 0
+
+      - name: Apply UX consolidation patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/desktop.rs')
+          text = path.read_text()
+
+          def repl(old: str, new: str, label: str):
+              global text
+              if old not in text:
+                  raise SystemExit(f'missing patch anchor: {label}')
+              text = text.replace(old, new, 1)
+
+          repl(
+              '    create_script_path: String,\n    project_status: String,',
+              '    create_script_path: String,\n    show_create_project: bool,\n    project_status: String,',
+              'show_create_project field',
+          )
+          repl(
+              '            create_script_path: String::new(),\n            project_status: String::new(),',
+              '            create_script_path: String::new(),\n            show_create_project: false,\n            project_status: String::new(),',
+              'show_create_project default',
+          )
+
+          repl(
+              '''                nav_button(ui, &mut self.screen, Screen::Projects, "Projects");
+                nav_button(ui, &mut self.screen, Screen::Dashboard, "Dashboard");
+                nav_button(ui, &mut self.screen, Screen::Scene, "Scene");
+                nav_button(ui, &mut self.screen, Screen::Settings, "Settings");''',
+              '''                nav_button(ui, &mut self.screen, Screen::Projects, "Projects");
+                if self.selected_project.is_some() {
+                    nav_button(ui, &mut self.screen, Screen::Dashboard, "Workspace");
+                }
+                nav_button(ui, &mut self.screen, Screen::Settings, "Settings");''',
+              'simplified top navigation',
+          )
+
+          repl(
+              '''        egui::CentralPanel::default().show(ctx, |ui| {''',
+              '''        if self.mutation_worker_active() {
+            egui::TopBottomPanel::bottom("active-work").show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spinner();
+                    ui.strong("Preparation in progress");
+                    if let Some(worker) = &self.run_worker {
+                        ui.label(format!("{} · {}", worker.project_id, worker.action.label()));
+                    } else if let Some(worker) = &self.flow_retry_worker {
+                        ui.label(format!("{} retry · {}", worker.target.label(), worker.project_id));
+                    } else if let Some(worker) = &self.remote_reconcile_worker {
+                        ui.label(format!("Checking audio status · {}", worker.project_id));
+                    } else if let Some(worker) = &self.manual_visual_worker {
+                        ui.label(format!("Importing {} / {}", worker.scene_id, worker.visual_id));
+                    }
+                });
+                ui.add_space(4.0);
+            });
+        }
+
+        egui::CentralPanel::default().show(ctx, |ui| {''',
+              'global activity bar',
+          )
+
+          repl(
+              '''                ui.heading("Projects");
+                ui.label(
+                    egui::RichText::new(
+                        "Start from a pasted script, then prepare visual and audio assets from one workspace.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(10.0);
+''',
+              '''                ui.horizontal(|ui| {
+                    ui.heading("Projects");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = if self.show_create_project { "Close" } else { "+ New project" };
+                        if ui.button(label).clicked() {
+                            self.show_create_project = !self.show_create_project;
+                        }
+                    });
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "Continue an existing project or start a new one from a .vprep script.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(10.0);
+''',
+              'projects header',
+          )
+
+          repl(
+              '''                ui.add_space(12.0);
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.heading(egui::RichText::new("Create a project").size(20.0));''',
+              '''                if self.show_create_project || self.catalog.projects.is_empty() {
+                    ui.add_space(12.0);
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.heading(egui::RichText::new("New project").size(20.0));''',
+              'new project conditional',
+          )
+
+          repl(
+              '''                    ui.add_sized(
+                        [ui.available_width(), 240.0],
+                        egui::TextEdit::multiline(&mut self.create_script_text)
+                            .code_editor()
+                            .desired_rows(12)
+                            .hint_text("Paste your structured .vprep script here..."),
+                    );
+
+                    ui.add_space(8.0);''',
+              '''                    ui.add_sized(
+                        [ui.available_width(), 240.0],
+                        egui::TextEdit::multiline(&mut self.create_script_text)
+                            .code_editor()
+                            .desired_rows(12)
+                            .hint_text("Paste your structured .vprep script here..."),
+                    );
+
+                    if !self.create_script_text.trim().is_empty() {
+                        ui.add_space(8.0);
+                        match crate::parse_script(self.create_script_text.trim()) {
+                            Ok(script) => {
+                                if self.create_project_id.trim().is_empty() {
+                                    self.create_project_id = slugify_project_id(&script.omnivoice.title);
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "✓ Valid script · {} · {} scenes · {} narration sections",
+                                        script.omnivoice.title,
+                                        script.scenes.len(),
+                                        script.omnivoice.sections.len()
+                                    ))
+                                    .color(egui::Color32::from_rgb(134, 239, 172)),
+                                );
+                            }
+                            Err(error) => {
+                                ui.colored_label(
+                                    ui.visuals().error_fg_color,
+                                    format!("Script needs attention: {error}"),
+                                );
+                            }
+                        }
+                    }
+
+                    ui.add_space(8.0);''',
+              'script validation preview',
+          )
+
+          repl(
+              '''                    {
+                        self.create_project_from_script();
+                    }
+                });
+
+                if !self.project_status.is_empty() {''',
+              '''                    {
+                        self.create_project_from_script();
+                    }
+                    });
+                }
+
+                if !self.project_status.is_empty() {''',
+              'close new project conditional',
+          )
+
+          repl(
+              'if ui.button("Open project").clicked() {',
+              'if ui.button("Continue").clicked() {',
+              'project continue CTA',
+          )
+
+          old_actions = '''      ui.add_space(12.0);
+      let worker_active = self.mutation_worker_active();
+      let remote_available = self.remote_reconciliation_available(true);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.label(egui::RichText::new("Project actions").strong().size(18.0));
+          ui.label(
+              egui::RichText::new(
+                  "Run all enabled flows, continue interrupted work, or retry failed work without leaving this screen.",
+              )
+              .weak(),
+          );
+          ui.add_space(8.0);
+          ui.horizontal_wrapped(|ui| {
+              if ui
+                  .add_enabled(!worker_active, egui::Button::new("Run project"))
+                  .clicked()
+              {
+                  self.start_run(RunAction::Run);
+              }
+              if ui
+                  .add_enabled(!worker_active, egui::Button::new("Resume"))
+                  .clicked()
+              {
+                  self.start_run(RunAction::Resume);
+              }
+              if ui
+                  .add_enabled(!worker_active, egui::Button::new("Retry failed"))
+                  .clicked()
+              {
+                  self.start_run(RunAction::RetryFailed);
+              }
+              if ui
+                  .add_enabled(
+                      !worker_active && remote_available,
+                      egui::Button::new("Reconcile remote audio"),
+                  )
+                  .clicked()
+              {
+                  self.start_remote_audio_reconciliation(true);
+              }
+              if ui
+                  .add_enabled(!worker_active, egui::Button::new("Refresh from disk"))
+                  .clicked()
+              {
+                  self.reload_selected_project();
+              }
+              if worker_active {
+                  ui.spinner();
+                  ui.label(egui::RichText::new("Background work in progress").weak());
+              }
+          });
+      });'''
+          new_actions = '''      ui.add_space(12.0);
+      let worker_active = self.mutation_worker_active();
+      let remote_available = self.remote_reconciliation_available(true);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.label(egui::RichText::new("Next step").strong().size(18.0));
+          ui.label(
+              egui::RichText::new(
+                  "Video Prepare picks the safest next action from the persisted project state.",
+              )
+              .weak(),
+          );
+          ui.add_space(8.0);
+
+          let smart_action = if remote_available
+              && matches!(
+                  inspection.audio_flow,
+                  crate::TaskState::Running | crate::TaskState::UnknownRemote
+              )
+          {
+              3
+          } else if inspection.overall == crate::TaskState::Completed {
+              4
+          } else if inspection.overall == crate::TaskState::Failed {
+              2
+          } else if matches!(
+              inspection.overall,
+              crate::TaskState::Partial
+                  | crate::TaskState::Interrupted
+                  | crate::TaskState::Running
+          ) {
+              1
+          } else {
+              0
+          };
+
+          let primary_label = match smart_action {
+              1 => "Continue preparation",
+              2 => "Retry failed items",
+              3 => "Check audio status",
+              4 => "Project ready ✓",
+              _ => "Start preparation",
+          };
+          if ui
+              .add_enabled(
+                  !worker_active && smart_action != 4,
+                  egui::Button::new(egui::RichText::new(primary_label).strong()),
+              )
+              .clicked()
+          {
+              match smart_action {
+                  1 => self.start_run(RunAction::Resume),
+                  2 => self.start_run(RunAction::RetryFailed),
+                  3 => self.start_remote_audio_reconciliation(true),
+                  _ => self.start_run(RunAction::Run),
+              }
+          }
+          if worker_active {
+              ui.horizontal(|ui| {
+                  ui.spinner();
+                  ui.label(egui::RichText::new("Working in the background").weak());
+              });
+          }
+
+          ui.add_space(6.0);
+          ui.collapsing("Advanced actions", |ui| {
+              ui.horizontal_wrapped(|ui| {
+                  if ui.add_enabled(!worker_active, egui::Button::new("Run all")).clicked() {
+                      self.start_run(RunAction::Run);
+                  }
+                  if ui.add_enabled(!worker_active, egui::Button::new("Resume")).clicked() {
+                      self.start_run(RunAction::Resume);
+                  }
+                  if ui.add_enabled(!worker_active, egui::Button::new("Retry failed")).clicked() {
+                      self.start_run(RunAction::RetryFailed);
+                  }
+                  if ui
+                      .add_enabled(!worker_active && remote_available, egui::Button::new("Check remote audio"))
+                      .clicked()
+                  {
+                      self.start_remote_audio_reconciliation(true);
+                  }
+                  if ui.add_enabled(!worker_active, egui::Button::new("Refresh from disk")).clicked() {
+                      self.reload_selected_project();
+                  }
+              });
+          });
+      });'''
+          repl(old_actions, new_actions, 'smart project action')
+
+          repl(
+              '''              ui.add_space(6.0);
+              for problem in &inspection.problems {
+                  ui.horizontal_wrapped(|ui| {
+                      status_badge(ui, &problem.area, problem.state);
+                      ui.strong(&problem.scope);
+                      ui.label(&problem.message);
+                  });
+              }''',
+              '''              ui.add_space(6.0);
+              let next_scene = inspection.problems.iter().find_map(|problem| {
+                  inspection
+                      .scenes
+                      .iter()
+                      .find(|scene| problem.scope.contains(&scene.id))
+                      .map(|scene| scene.id.clone())
+              });
+              if let Some(scene_id) = next_scene {
+                  if ui.button("Fix next issue").clicked() {
+                      self.selected_scene_id = Some(scene_id);
+                      self.screen = Screen::Scene;
+                  }
+                  ui.add_space(4.0);
+              }
+              for problem in &inspection.problems {
+                  let scene_target = inspection
+                      .scenes
+                      .iter()
+                      .find(|scene| problem.scope.contains(&scene.id))
+                      .map(|scene| scene.id.clone());
+                  egui::Frame::group(ui.style()).show(ui, |ui| {
+                      ui.set_min_width(ui.available_width());
+                      ui.horizontal_wrapped(|ui| {
+                          status_badge(ui, &problem.area, problem.state);
+                          ui.strong(&problem.scope);
+                          ui.label(&problem.message);
+                          if let Some(scene_id) = scene_target.clone() {
+                              if ui.button("Open scene").clicked() {
+                                  self.selected_scene_id = Some(scene_id);
+                                  self.screen = Screen::Scene;
+                              }
+                          }
+                      });
+                  });
+              }''',
+              'actionable attention queue',
+          )
+
+          repl(
+              '      ui.heading(egui::RichText::new("Dashboard").size(24.0));',
+              '      ui.heading(egui::RichText::new("Project workspace").size(24.0));',
+              'workspace title',
+          )
+
+          repl(
+              '''      let mutation_busy = self.mutation_worker_active();
+      egui::Frame::group(ui.style()).show(ui, |ui| {''',
+              '''      let mutation_busy = self.mutation_worker_active();
+      let scene_index = inspection.scenes.iter().position(|item| item.id == scene.id);
+      let previous_scene_id = scene_index
+          .and_then(|index| index.checked_sub(1))
+          .and_then(|index| inspection.scenes.get(index))
+          .map(|item| item.id.clone());
+      let next_scene_id = scene_index
+          .and_then(|index| inspection.scenes.get(index + 1))
+          .map(|item| item.id.clone());
+      egui::Frame::group(ui.style()).show(ui, |ui| {''',
+              'scene sibling navigation state',
+          )
+
+          repl(
+              '''          ui.horizontal_wrapped(|ui| {
+              if ui.button("Back to Dashboard").clicked() {
+                  self.screen = Screen::Dashboard;
+              }
+              if ui
+                  .add_enabled(!mutation_busy, egui::Button::new("Refresh from disk"))
+                  .clicked()
+              {
+                  self.reload_selected_project();
+              }
+              if mutation_busy {
+                  ui.spinner();
+                  ui.label(egui::RichText::new("Background work in progress").weak());
+              }
+          });''',
+              '''          ui.horizontal_wrapped(|ui| {
+              if ui.button("← Project").clicked() {
+                  self.screen = Screen::Dashboard;
+              }
+              if ui
+                  .add_enabled(!mutation_busy, egui::Button::new("Refresh"))
+                  .clicked()
+              {
+                  self.reload_selected_project();
+              }
+              ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                  if ui.add_enabled(next_scene_id.is_some(), egui::Button::new("Next ›")).clicked() {
+                      self.selected_scene_id = next_scene_id.clone();
+                  }
+                  if ui.add_enabled(previous_scene_id.is_some(), egui::Button::new("‹ Previous")).clicked() {
+                      self.selected_scene_id = previous_scene_id.clone();
+                  }
+              });
+              if mutation_busy {
+                  ui.spinner();
+              }
+          });''',
+              'scene navigation controls',
+          )
+
+          manual_box = '''      ui.add_space(12.0);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.label(
+              egui::RichText::new("Manual visual takeover")
+                  .strong()
+                  .size(18.0),
+          );
+          ui.label(
+              egui::RichText::new(
+                  "Provide a local image or video when a stock request cannot be satisfied. The original absolute path is not persisted.",
+              )
+              .weak(),
+          );
+          ui.add_space(8.0);
+          ui.label(egui::RichText::new("Local image / video file").strong());
+          ui.add_sized(
+              [ui.available_width(), 34.0],
+              egui::TextEdit::singleline(&mut self.manual_visual_path)
+                  .hint_text("/path/to/local/asset.mp4"),
+          );
+          if let Some(worker) = &self.manual_visual_worker {
+              ui.add_space(6.0);
+              ui.label(format!(
+                  "Importing {} / {} for project `{}`...",
+                  worker.scene_id, worker.visual_id, worker.project_id
+              ));
+          }
+          if !self.manual_visual_status.is_empty() {
+              if self.manual_visual_status_is_error {
+                  ui.colored_label(
+                      ui.visuals().error_fg_color,
+                      &self.manual_visual_status,
+                  );
+              } else {
+                  ui.label(&self.manual_visual_status);
+              }
+          }
+          if let Some(summary) = &self.last_manual_visual_import {
+              ui.small(format!(
+                  "Last import: {}/{} slot {} -> {} ({:?}).",
+                  summary.scene_id,
+                  summary.visual_id,
+                  summary.slot,
+                  summary.relative_path,
+                  summary.request_state
+              ));
+          }
+      });
+'''
+          manual_replacement = '''      if !self.manual_visual_status.is_empty() {
+          ui.add_space(8.0);
+          if self.manual_visual_status_is_error {
+              ui.colored_label(ui.visuals().error_fg_color, &self.manual_visual_status);
+          } else {
+              ui.label(&self.manual_visual_status);
+          }
+      }
+'''
+          repl(manual_box, manual_replacement, 'remove global manual path input')
+
+          repl(
+              '''                  if request.completed_assets < target {
+                      ui.add_space(6.0);
+                      let source_ready = !self.manual_visual_path.trim().is_empty();
+                      if ui
+                          .add_enabled(
+                              !mutation_busy && source_ready,
+                              egui::Button::new(format!(
+                                  "Use local file for {}",
+                                  request.id
+                              )),
+                          )
+                          .clicked()
+                      {
+                          self.start_manual_visual_import(&scene.id, &request.id);
+                      }
+                      if !source_ready {
+                          ui.label(
+                              egui::RichText::new(
+                                  "Choose a local file above to enable manual takeover.",
+                              )
+                              .weak(),
+                          );
+                      }
+                  }''',
+              '''                  if request.completed_assets < target {
+                      ui.add_space(6.0);
+                      if ui
+                          .add_enabled(
+                              !mutation_busy,
+                              egui::Button::new(format!("Choose local file for {}", request.id)),
+                          )
+                          .clicked()
+                      {
+                          match pick_visual_asset_file() {
+                              Ok(Some(path)) => {
+                                  self.manual_visual_path = path.to_string_lossy().into_owned();
+                                  self.start_manual_visual_import(&scene.id, &request.id);
+                              }
+                              Ok(None) => {}
+                              Err(error) => {
+                                  self.manual_visual_status = error;
+                                  self.manual_visual_status_is_error = true;
+                              }
+                          }
+                      }
+                      ui.label(
+                          egui::RichText::new("Use a local image/video when stock search cannot finish this request.")
+                              .weak(),
+                      );
+                  }''',
+              'per-request local file picker',
+          )
+
+          repl(
+              '''                              ui.horizontal_wrapped(|ui| {
+                                  ui.strong(format!(
+                                      "Slot {} · {:?}",
+                                      asset.slot, asset.kind
+                                  ));
+                                  ui.label(
+                                      egui::RichText::new(format!(
+                                          "{} · {} bytes · provider asset {}",
+                                          asset.provider, asset.bytes, asset.provider_asset_id
+                                      ))
+                                      .weak(),
+                                  );
+                              });
+                              ui.small(format!("Relative path: {}", asset.relative_path));
+                              ui.label(egui::RichText::new("Full path").strong());
+                              ui.add(
+                                  egui::Label::new(
+                                      egui::RichText::new(
+                                          asset.absolute_path.display().to_string(),
+                                      )
+                                      .monospace(),
+                                  )
+                                  .wrap(),
+                              );
+                              ui.horizontal_wrapped(|ui| {
+                                  if ui.button("Preview").clicked() {''',
+              '''                              let display_name = asset
+                                  .absolute_path
+                                  .file_name()
+                                  .and_then(|value| value.to_str())
+                                  .unwrap_or(&asset.relative_path);
+                              ui.strong(display_name);
+                              ui.horizontal_wrapped(|ui| {
+                                  if ui.button("Preview").clicked() {''',
+              'asset content-first header',
+          )
+
+          repl(
+              '''                                  }
+                              });
+                          });''',
+              '''                                  }
+                              });
+                              ui.collapsing("Details", |ui| {
+                                  ui.small(format!(
+                                      "Slot {} · {:?} · {} bytes · provider {} · asset {}",
+                                      asset.slot, asset.kind, asset.bytes, asset.provider, asset.provider_asset_id
+                                  ));
+                                  ui.small(format!("Relative path: {}", asset.relative_path));
+                                  ui.add(
+                                      egui::Label::new(
+                                          egui::RichText::new(asset.absolute_path.display().to_string()).monospace(),
+                                      )
+                                      .wrap(),
+                                  );
+                              });
+                          });''',
+              'asset details disclosure',
+          )
+
+          repl(
+              '''                self.create_script_path.clear();
+                self.select_project(project);''',
+              '''                self.create_script_path.clear();
+                self.show_create_project = false;
+                self.select_project(project);''',
+              'close create panel on success',
+          )
+
+          helper_anchor = '''fn pick_data_root_folder(current: &str) -> Result<Option<PathBuf>, String> {'''
+          helper = r'''fn pick_visual_asset_file() -> Result<Option<PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("osascript")
+            .args([
+                "-e",
+                r#"POSIX path of (choose file with prompt "Choose local image or video")"#,
+            ])
+            .output()
+            .map_err(|error| format!("failed to launch macOS file chooser: {error}"))?;
+        if output.status.success() {
+            return selected_folder_from_stdout(&output.stdout);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("User canceled") || stderr.contains("(-128)") {
+            return Ok(None);
+        }
+        return Err(format!("macOS file chooser failed: {}", stderr.trim()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        const SCRIPT: &str = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = 'Choose local image or video'
+$dialog.Filter = 'Media files|*.jpg;*.jpeg;*.png;*.webp;*.gif;*.mp4;*.mov;*.mkv;*.webm|All files|*.*'
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.Write($dialog.FileName)
+}
+"#;
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-STA", "-Command", SCRIPT])
+            .output()
+            .map_err(|error| format!("failed to launch Windows file chooser: {error}"))?;
+        if output.status.success() {
+            return selected_folder_from_stdout(&output.stdout);
+        }
+        return Err(format!(
+            "Windows file chooser failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        match Command::new("zenity")
+            .args(["--file-selection", "--title=Choose local image or video"])
+            .output()
+        {
+            Ok(output) if output.status.success() => return selected_folder_from_stdout(&output.stdout),
+            Ok(output) if output.status.code() == Some(1) => return Ok(None),
+            Ok(_) => {}
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!("failed to launch Linux file chooser: {error}"));
+            }
+            Err(_) => {}
+        }
+
+        match Command::new("kdialog")
+            .args(["--getopenfilename", ".", "--title", "Choose local image or video"])
+            .output()
+        {
+            Ok(output) if output.status.success() => return selected_folder_from_stdout(&output.stdout),
+            Ok(output) if output.status.code() == Some(1) => return Ok(None),
+            Ok(output) => {
+                return Err(format!(
+                    "Linux file chooser failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err("no supported system file chooser found (tried zenity and kdialog)".to_owned());
+            }
+            Err(error) => return Err(format!("failed to launch Linux file chooser: {error}")),
+        }
+    }
+
+    #[allow(unreachable_code)]
+    Err("system file chooser is not supported on this platform".to_owned())
+}
+
+fn slugify_project_id(title: &str) -> String {
+    let mut slug = String::new();
+    let mut separator_pending = false;
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if separator_pending && !slug.is_empty() {
+                slug.push('-');
+            }
+            slug.push(ch.to_ascii_lowercase());
+            separator_pending = false;
+        } else if !slug.is_empty() {
+            separator_pending = true;
+        }
+    }
+    if slug.is_empty() {
+        "video-project".to_owned()
+    } else {
+        slug
+    }
+}
+
+'''
+          repl(helper_anchor, helper + helper_anchor, 'file picker and slug helpers')
+
+          text = text.replace('"Back to Dashboard"', '"Back to Project"')
+          text = text.replace('"Go to Dashboard"', '"Go to Project"')
+          text = text.replace('"Choose a scene from the Dashboard first."', '"Choose a scene from the Project workspace first."')
+          path.write_text(text)
+          PY
+
+      - name: Format
+        run: cargo fmt --all --check || (cargo fmt --all && cargo fmt --all --check)
+
+      - name: Check
+        run: cargo check --locked --all-targets --all-features
+
+      - name: Test
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Commit implementation and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/ux-consolidation-one-shot.yml
+          git add src/desktop.rs
+          git commit -m "feat: consolidate desktop UX around project workspace"
+          git push origin HEAD:feat/ux-consolidation-workspace
