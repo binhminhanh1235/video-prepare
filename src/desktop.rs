@@ -77,6 +77,7 @@ pub struct VideoPrepareApp {
     create_project_id: String,
     create_script_text: String,
     create_script_path: String,
+    show_create_project: bool,
     project_status: String,
     project_status_is_error: bool,
     run_worker: Option<RunWorker>,
@@ -158,6 +159,7 @@ impl Default for VideoPrepareApp {
             create_project_id: String::new(),
             create_script_text: String::new(),
             create_script_path: String::new(),
+            show_create_project: false,
             project_status: String::new(),
             project_status_is_error: false,
             run_worker: None,
@@ -205,12 +207,40 @@ impl eframe::App for VideoPrepareApp {
                 ui.separator();
                 ui.add_space(4.0);
                 nav_button(ui, &mut self.screen, Screen::Projects, "Projects");
-                nav_button(ui, &mut self.screen, Screen::Dashboard, "Dashboard");
-                nav_button(ui, &mut self.screen, Screen::Scene, "Scene");
+                if self.selected_project.is_some() {
+                    nav_button(ui, &mut self.screen, Screen::Dashboard, "Workspace");
+                }
                 nav_button(ui, &mut self.screen, Screen::Settings, "Settings");
             });
             ui.add_space(6.0);
         });
+
+        if self.mutation_worker_active() {
+            egui::TopBottomPanel::bottom("active-work").show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spinner();
+                    ui.strong("Preparation in progress");
+                    if let Some(worker) = &self.run_worker {
+                        ui.label(format!("{} · {}", worker.project_id, worker.action.label()));
+                    } else if let Some(worker) = &self.flow_retry_worker {
+                        ui.label(format!(
+                            "{} retry · {}",
+                            worker.target.label(),
+                            worker.project_id
+                        ));
+                    } else if let Some(worker) = &self.remote_reconcile_worker {
+                        ui.label(format!("Checking audio status · {}", worker.project_id));
+                    } else if let Some(worker) = &self.manual_visual_worker {
+                        ui.label(format!(
+                            "Importing {} / {}",
+                            worker.scene_id, worker.visual_id
+                        ));
+                    }
+                });
+                ui.add_space(4.0);
+            });
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(8.0);
@@ -239,10 +269,18 @@ impl VideoPrepareApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.set_max_width(980.0);
-                ui.heading("Projects");
+                ui.horizontal(|ui| {
+                    ui.heading("Projects");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = if self.show_create_project { "Close" } else { "+ New project" };
+                        if ui.button(label).clicked() {
+                            self.show_create_project = !self.show_create_project;
+                        }
+                    });
+                });
                 ui.label(
                     egui::RichText::new(
-                        "Start from a pasted script, then prepare visual and audio assets from one workspace.",
+                        "Continue an existing project or start a new one from a .vprep script.",
                     )
                     .weak(),
                 );
@@ -261,10 +299,11 @@ impl VideoPrepareApp {
                     });
                 });
 
-                ui.add_space(12.0);
-                egui::Frame::group(ui.style()).show(ui, |ui| {
+                if self.show_create_project || self.catalog.projects.is_empty() {
+                    ui.add_space(12.0);
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    ui.heading(egui::RichText::new("Create a project").size(20.0));
+                    ui.heading(egui::RichText::new("New project").size(20.0));
                     ui.label(
                         egui::RichText::new(
                             "Paste is the preferred input. File import stays available as a fallback.",
@@ -303,6 +342,32 @@ impl VideoPrepareApp {
                             .hint_text("Paste your structured .vprep script here..."),
                     );
 
+                    if !self.create_script_text.trim().is_empty() {
+                        ui.add_space(8.0);
+                        match crate::parse_script(self.create_script_text.trim()) {
+                            Ok(script) => {
+                                if self.create_project_id.trim().is_empty() {
+                                    self.create_project_id = slugify_project_id(&script.omnivoice.title);
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "✓ Valid script · {} · {} scenes · {} narration sections",
+                                        script.omnivoice.title,
+                                        script.scenes.len(),
+                                        script.omnivoice.sections.len()
+                                    ))
+                                    .color(egui::Color32::from_rgb(134, 239, 172)),
+                                );
+                            }
+                            Err(error) => {
+                                ui.colored_label(
+                                    ui.visuals().error_fg_color,
+                                    format!("Script needs attention: {error}"),
+                                );
+                            }
+                        }
+                    }
+
                     ui.add_space(8.0);
                     ui.collapsing("Import a .vprep file instead", |ui| {
                         ui.label(
@@ -340,7 +405,8 @@ impl VideoPrepareApp {
                     {
                         self.create_project_from_script();
                     }
-                });
+                    });
+                }
 
                 if !self.project_status.is_empty() {
                     ui.add_space(10.0);
@@ -403,7 +469,7 @@ impl VideoPrepareApp {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui.button("Open project").clicked() {
+                                        if ui.button("Continue").clicked() {
                                             self.open_project(&project_id);
                                         }
                                     },
@@ -441,7 +507,7 @@ impl VideoPrepareApp {
   .auto_shrink([false, false])
   .show(ui, |ui| {
       ui.set_max_width(1040.0);
-      ui.heading(egui::RichText::new("Dashboard").size(24.0));
+      ui.heading(egui::RichText::new("Project workspace").size(24.0));
       ui.label(
           egui::RichText::new(
               "Run the project, inspect flow health, and jump into scenes that need attention.",
@@ -524,52 +590,79 @@ impl VideoPrepareApp {
       let remote_available = self.remote_reconciliation_available(true);
       egui::Frame::group(ui.style()).show(ui, |ui| {
           ui.set_min_width(ui.available_width());
-          ui.label(egui::RichText::new("Project actions").strong().size(18.0));
+          ui.label(egui::RichText::new("Next step").strong().size(18.0));
           ui.label(
               egui::RichText::new(
-                  "Run all enabled flows, continue interrupted work, or retry failed work without leaving this screen.",
+                  "Video Prepare picks the safest next action from the persisted project state.",
               )
               .weak(),
           );
           ui.add_space(8.0);
-          ui.horizontal_wrapped(|ui| {
-              if ui
-                  .add_enabled(!worker_active, egui::Button::new("Run project"))
-                  .clicked()
-              {
-                  self.start_run(RunAction::Run);
+          let smart_action = if remote_available
+              && matches!(inspection.audio_flow, crate::TaskState::Running | crate::TaskState::UnknownRemote)
+          {
+              3
+          } else if inspection.overall == crate::TaskState::Completed {
+              4
+          } else if inspection.overall == crate::TaskState::Failed {
+              2
+          } else if matches!(
+              inspection.overall,
+              crate::TaskState::Partial | crate::TaskState::Interrupted | crate::TaskState::Running
+          ) {
+              1
+          } else {
+              0
+          };
+          let primary_label = match smart_action {
+              1 => "Continue preparation",
+              2 => "Retry failed items",
+              3 => "Check audio status",
+              4 => "Project ready ✓",
+              _ => "Start preparation",
+          };
+          if ui
+              .add_enabled(
+                  !worker_active && smart_action != 4,
+                  egui::Button::new(egui::RichText::new(primary_label).strong()),
+              )
+              .clicked()
+          {
+              match smart_action {
+                  1 => self.start_run(RunAction::Resume),
+                  2 => self.start_run(RunAction::RetryFailed),
+                  3 => self.start_remote_audio_reconciliation(true),
+                  _ => self.start_run(RunAction::Run),
               }
-              if ui
-                  .add_enabled(!worker_active, egui::Button::new("Resume"))
-                  .clicked()
-              {
-                  self.start_run(RunAction::Resume);
-              }
-              if ui
-                  .add_enabled(!worker_active, egui::Button::new("Retry failed"))
-                  .clicked()
-              {
-                  self.start_run(RunAction::RetryFailed);
-              }
-              if ui
-                  .add_enabled(
-                      !worker_active && remote_available,
-                      egui::Button::new("Reconcile remote audio"),
-                  )
-                  .clicked()
-              {
-                  self.start_remote_audio_reconciliation(true);
-              }
-              if ui
-                  .add_enabled(!worker_active, egui::Button::new("Refresh from disk"))
-                  .clicked()
-              {
-                  self.reload_selected_project();
-              }
-              if worker_active {
+          }
+          if worker_active {
+              ui.horizontal(|ui| {
                   ui.spinner();
-                  ui.label(egui::RichText::new("Background work in progress").weak());
-              }
+                  ui.label(egui::RichText::new("Working in the background").weak());
+              });
+          }
+          ui.add_space(6.0);
+          ui.collapsing("Advanced actions", |ui| {
+              ui.horizontal_wrapped(|ui| {
+                  if ui.add_enabled(!worker_active, egui::Button::new("Run all")).clicked() {
+                      self.start_run(RunAction::Run);
+                  }
+                  if ui.add_enabled(!worker_active, egui::Button::new("Resume")).clicked() {
+                      self.start_run(RunAction::Resume);
+                  }
+                  if ui.add_enabled(!worker_active, egui::Button::new("Retry failed")).clicked() {
+                      self.start_run(RunAction::RetryFailed);
+                  }
+                  if ui
+                      .add_enabled(!worker_active && remote_available, egui::Button::new("Check remote audio"))
+                      .clicked()
+                  {
+                      self.start_remote_audio_reconciliation(true);
+                  }
+                  if ui.add_enabled(!worker_active, egui::Button::new("Refresh from disk")).clicked() {
+                      self.reload_selected_project();
+                  }
+              });
           });
       });
 
@@ -649,11 +742,35 @@ impl VideoPrepareApp {
                   .weak(),
               );
               ui.add_space(6.0);
+              let next_scene = inspection.problems.iter().find_map(|problem| {
+                  inspection.scenes.iter().find(|scene| problem.scope.contains(&scene.id)).map(|scene| scene.id.clone())
+              });
+              if let Some(scene_id) = next_scene {
+                  if ui.button("Fix next issue").clicked() {
+                      self.selected_scene_id = Some(scene_id);
+                      self.screen = Screen::Scene;
+                  }
+                  ui.add_space(4.0);
+              }
               for problem in &inspection.problems {
-                  ui.horizontal_wrapped(|ui| {
-                      status_badge(ui, &problem.area, problem.state);
-                      ui.strong(&problem.scope);
-                      ui.label(&problem.message);
+                  let scene_target = inspection
+                      .scenes
+                      .iter()
+                      .find(|scene| problem.scope.contains(&scene.id))
+                      .map(|scene| scene.id.clone());
+                  egui::Frame::group(ui.style()).show(ui, |ui| {
+                      ui.set_min_width(ui.available_width());
+                      ui.horizontal_wrapped(|ui| {
+                          status_badge(ui, &problem.area, problem.state);
+                          ui.strong(&problem.scope);
+                          ui.label(&problem.message);
+                          if let Some(scene_id) = scene_target.clone() {
+                              if ui.button("Open scene").clicked() {
+                                  self.selected_scene_id = Some(scene_id);
+                                  self.screen = Screen::Scene;
+                              }
+                          }
+                      });
                   });
               }
           });
@@ -748,7 +865,7 @@ impl VideoPrepareApp {
           egui::Frame::group(ui.style()).show(ui, |ui| {
               ui.set_min_width(ui.available_width());
               ui.label("No inspected project is selected.");
-              if ui.button("Go to Dashboard").clicked() {
+              if ui.button("Go to Project").clicked() {
                   self.screen = Screen::Dashboard;
               }
           });
@@ -757,8 +874,8 @@ impl VideoPrepareApp {
       let Some(scene_id) = self.selected_scene_id.clone() else {
           egui::Frame::group(ui.style()).show(ui, |ui| {
               ui.set_min_width(ui.available_width());
-              ui.label("Choose a scene from the Dashboard first.");
-              if ui.button("Go to Dashboard").clicked() {
+              ui.label("Choose a scene from the Project workspace first.");
+              if ui.button("Go to Project").clicked() {
                   self.screen = Screen::Dashboard;
               }
           });
@@ -773,21 +890,33 @@ impl VideoPrepareApp {
       };
 
       let mutation_busy = self.mutation_worker_active();
+      let scene_index = inspection.scenes.iter().position(|item| item.id == scene.id);
+      let previous_scene_id = scene_index
+          .and_then(|index| index.checked_sub(1))
+          .and_then(|index| inspection.scenes.get(index))
+          .map(|item| item.id.clone());
+      let next_scene_id = scene_index
+          .and_then(|index| inspection.scenes.get(index + 1))
+          .map(|item| item.id.clone());
       egui::Frame::group(ui.style()).show(ui, |ui| {
           ui.set_min_width(ui.available_width());
           ui.horizontal_wrapped(|ui| {
-              if ui.button("Back to Dashboard").clicked() {
+              if ui.button("← Project").clicked() {
                   self.screen = Screen::Dashboard;
               }
-              if ui
-                  .add_enabled(!mutation_busy, egui::Button::new("Refresh from disk"))
-                  .clicked()
-              {
+              if ui.add_enabled(!mutation_busy, egui::Button::new("Refresh")).clicked() {
                   self.reload_selected_project();
               }
+              ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                  if ui.add_enabled(next_scene_id.is_some(), egui::Button::new("Next ›")).clicked() {
+                      self.selected_scene_id = next_scene_id.clone();
+                  }
+                  if ui.add_enabled(previous_scene_id.is_some(), egui::Button::new("‹ Previous")).clicked() {
+                      self.selected_scene_id = previous_scene_id.clone();
+                  }
+              });
               if mutation_busy {
                   ui.spinner();
-                  ui.label(egui::RichText::new("Background work in progress").weak());
               }
           });
           ui.add_space(8.0);
@@ -864,55 +993,14 @@ impl VideoPrepareApp {
           }
       });
 
-      ui.add_space(12.0);
-      egui::Frame::group(ui.style()).show(ui, |ui| {
-          ui.set_min_width(ui.available_width());
-          ui.label(
-              egui::RichText::new("Manual visual takeover")
-                  .strong()
-                  .size(18.0),
-          );
-          ui.label(
-              egui::RichText::new(
-                  "Provide a local image or video when a stock request cannot be satisfied. The original absolute path is not persisted.",
-              )
-              .weak(),
-          );
+      if !self.manual_visual_status.is_empty() {
           ui.add_space(8.0);
-          ui.label(egui::RichText::new("Local image / video file").strong());
-          ui.add_sized(
-              [ui.available_width(), 34.0],
-              egui::TextEdit::singleline(&mut self.manual_visual_path)
-                  .hint_text("/path/to/local/asset.mp4"),
-          );
-          if let Some(worker) = &self.manual_visual_worker {
-              ui.add_space(6.0);
-              ui.label(format!(
-                  "Importing {} / {} for project `{}`...",
-                  worker.scene_id, worker.visual_id, worker.project_id
-              ));
+          if self.manual_visual_status_is_error {
+              ui.colored_label(ui.visuals().error_fg_color, &self.manual_visual_status);
+          } else {
+              ui.label(&self.manual_visual_status);
           }
-          if !self.manual_visual_status.is_empty() {
-              if self.manual_visual_status_is_error {
-                  ui.colored_label(
-                      ui.visuals().error_fg_color,
-                      &self.manual_visual_status,
-                  );
-              } else {
-                  ui.label(&self.manual_visual_status);
-              }
-          }
-          if let Some(summary) = &self.last_manual_visual_import {
-              ui.small(format!(
-                  "Last import: {}/{} slot {} -> {} ({:?}).",
-                  summary.scene_id,
-                  summary.visual_id,
-                  summary.slot,
-                  summary.relative_path,
-                  summary.request_state
-              ));
-          }
-      });
+      }
 
       ui.add_space(16.0);
       ui.heading(egui::RichText::new("Visual requests").size(20.0));
@@ -1053,27 +1141,29 @@ impl VideoPrepareApp {
                   }
                   if request.completed_assets < target {
                       ui.add_space(6.0);
-                      let source_ready = !self.manual_visual_path.trim().is_empty();
                       if ui
                           .add_enabled(
-                              !mutation_busy && source_ready,
-                              egui::Button::new(format!(
-                                  "Use local file for {}",
-                                  request.id
-                              )),
+                              !mutation_busy,
+                              egui::Button::new(format!("Choose local file for {}", request.id)),
                           )
                           .clicked()
                       {
-                          self.start_manual_visual_import(&scene.id, &request.id);
+                          match pick_visual_asset_file() {
+                              Ok(Some(path)) => {
+                                  self.manual_visual_path = path.to_string_lossy().into_owned();
+                                  self.start_manual_visual_import(&scene.id, &request.id);
+                              }
+                              Ok(None) => {}
+                              Err(error) => {
+                                  self.manual_visual_status = error;
+                                  self.manual_visual_status_is_error = true;
+                              }
+                          }
                       }
-                      if !source_ready {
-                          ui.label(
-                              egui::RichText::new(
-                                  "Choose a local file above to enable manual takeover.",
-                              )
+                      ui.label(
+                          egui::RichText::new("Use a local image/video when stock search cannot finish this request.")
                               .weak(),
-                          );
-                      }
+                      );
                   }
               });
               ui.add_space(6.0);
@@ -1535,6 +1625,7 @@ impl VideoPrepareApp {
                 self.create_project_id.clear();
                 self.create_script_text.clear();
                 self.create_script_path.clear();
+                self.show_create_project = false;
                 self.select_project(project);
                 self.refresh_projects();
                 self.project_status = format!("Created project `{created_id}` from {source}.");
@@ -2202,6 +2293,119 @@ fn reveal_asset_in_folder(path: &Path) -> Result<(), String> {
 
     #[allow(unreachable_code)]
     Err("revealing an asset is not supported on this platform".to_owned())
+}
+
+fn pick_visual_asset_file() -> Result<Option<PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("osascript")
+            .args([
+                "-e",
+                r#"POSIX path of (choose file with prompt "Choose local image or video")"#,
+            ])
+            .output()
+            .map_err(|error| format!("failed to launch macOS file chooser: {error}"))?;
+        if output.status.success() {
+            return selected_folder_from_stdout(&output.stdout);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("User canceled") || stderr.contains("(-128)") {
+            return Ok(None);
+        }
+        return Err(format!("macOS file chooser failed: {}", stderr.trim()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        const SCRIPT: &str = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = 'Choose local image or video'
+$dialog.Filter = 'Media files|*.jpg;*.jpeg;*.png;*.webp;*.gif;*.mp4;*.mov;*.mkv;*.webm|All files|*.*'
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.Write($dialog.FileName)
+}
+"#;
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-STA", "-Command", SCRIPT])
+            .output()
+            .map_err(|error| format!("failed to launch Windows file chooser: {error}"))?;
+        if output.status.success() {
+            return selected_folder_from_stdout(&output.stdout);
+        }
+        return Err(format!(
+            "Windows file chooser failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        match Command::new("zenity")
+            .args(["--file-selection", "--title=Choose local image or video"])
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                return selected_folder_from_stdout(&output.stdout)
+            }
+            Ok(output) if output.status.code() == Some(1) => return Ok(None),
+            Ok(_) => {}
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!("failed to launch Linux file chooser: {error}"));
+            }
+            Err(_) => {}
+        }
+        match Command::new("kdialog")
+            .args([
+                "--getopenfilename",
+                ".",
+                "--title",
+                "Choose local image or video",
+            ])
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                return selected_folder_from_stdout(&output.stdout)
+            }
+            Ok(output) if output.status.code() == Some(1) => return Ok(None),
+            Ok(output) => {
+                return Err(format!(
+                    "Linux file chooser failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(
+                    "no supported system file chooser found (tried zenity and kdialog)".to_owned(),
+                );
+            }
+            Err(error) => return Err(format!("failed to launch Linux file chooser: {error}")),
+        }
+    }
+
+    #[allow(unreachable_code)]
+    Err("system file chooser is not supported on this platform".to_owned())
+}
+
+fn slugify_project_id(title: &str) -> String {
+    let mut slug = String::new();
+    let mut separator_pending = false;
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if separator_pending && !slug.is_empty() {
+                slug.push('-');
+            }
+            slug.push(ch.to_ascii_lowercase());
+            separator_pending = false;
+        } else if !slug.is_empty() {
+            separator_pending = true;
+        }
+    }
+    if slug.is_empty() {
+        "video-project".to_owned()
+    } else {
+        slug
+    }
 }
 
 fn pick_data_root_folder(current: &str) -> Result<Option<PathBuf>, String> {
