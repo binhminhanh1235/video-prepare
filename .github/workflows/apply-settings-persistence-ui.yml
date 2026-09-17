@@ -1,0 +1,254 @@
+name: Apply settings persistence UI
+
+on:
+  push:
+    branches:
+      - feat/persist-runtime-settings
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch desktop and docs
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          desktop = Path('src/desktop.rs')
+          text = desktop.read_text()
+
+          old = '''        let settings = RuntimeSettingsStore::default();
+        let draft = settings.draft();
+        let catalog_data_root = settings.current().safe.data_root.clone();
+        let mut app = Self {
+            settings,
+            draft,
+            screen: Screen::Projects,
+            status: "Runtime settings are memory-only until applied.".to_owned(),
+            status_is_error: false,
+'''
+          new = '''        let (settings, load_warning) = RuntimeSettingsStore::load_persistent_or_default();
+        let draft = settings.draft();
+        let catalog_data_root = settings.current().safe.data_root.clone();
+        let (status, status_is_error) = match load_warning {
+            Some(error) => (
+                format!(
+                    "Could not load saved preferences: {error}. Defaults are active; Apply settings will try to repair the saved file."
+                ),
+                true,
+            ),
+            None => match settings.persistence_path() {
+                Some(path) => (
+                    format!(
+                        "Settings persistence is enabled at {}. API keys and tokens remain session-only.",
+                        path.display()
+                    ),
+                    false,
+                ),
+                None => (
+                    "Settings persistence is unavailable in this environment.".to_owned(),
+                    true,
+                ),
+            },
+        };
+        let mut app = Self {
+            settings,
+            draft,
+            screen: Screen::Projects,
+            status,
+            status_is_error,
+'''
+          if old not in text:
+              raise SystemExit('desktop default snippet not found')
+          text = text.replace(old, new, 1)
+
+          old = '''      ui.horizontal_wrapped(|ui| {
+          ui.label(
+              egui::RichText::new(format!(
+                  "Applied revision {}",
+                  self.settings.current().revision
+              ))
+              .monospace(),
+          );
+          ui.label(
+              egui::RichText::new(
+                  "Changes below remain a draft until you click Apply settings.",
+              )
+              .weak(),
+          );
+      });
+'''
+          new = '''      ui.horizontal_wrapped(|ui| {
+          ui.label(
+              egui::RichText::new(format!(
+                  "Applied revision {}",
+                  self.settings.current().revision
+              ))
+              .monospace(),
+          );
+          ui.label(
+              egui::RichText::new(
+                  "Changes below remain a draft until you click Apply settings.",
+              )
+              .weak(),
+          );
+      });
+      if let Some(path) = self.settings.persistence_path() {
+          ui.small(format!("Saved preferences: {}", path.display()));
+      }
+      ui.small("Data Root, flow toggles, provider URL, voice options, quality, and concurrency are restored on next launch. API keys and tokens are intentionally session-only.");
+'''
+          if old not in text:
+              raise SystemExit('settings heading snippet not found')
+          text = text.replace(old, new, 1)
+
+          old = '          ui.small("Connection tests use a captured copy of the draft. Secrets stay memory-only.");\n'
+          new = '          ui.small("Connection tests use a captured copy of the draft. The API key is session-only and is never written to the preferences file.");\n'
+          if old not in text:
+              raise SystemExit('pexels secret note not found')
+          text = text.replace(old, new, 1)
+
+          old = '''                          self.status = format!(
+                              "Applied runtime settings revision {}.",
+                              snapshot.revision
+                          );
+'''
+          new = '''                          self.status = match self.settings.persistence_path() {
+                              Some(path) => format!(
+                                  "Applied runtime settings revision {} and saved preferences to {}. API keys and tokens remain session-only.",
+                                  snapshot.revision,
+                                  path.display()
+                              ),
+                              None => format!(
+                                  "Applied runtime settings revision {}. Persistent storage is unavailable.",
+                                  snapshot.revision
+                              ),
+                          };
+'''
+          if old not in text:
+              raise SystemExit('apply success status snippet not found')
+          text = text.replace(old, new, 1)
+
+          old = '''              ui.label(
+                  egui::RichText::new(
+                      "Applying updates the in-memory runtime snapshot used by new work.",
+                  )
+                  .weak(),
+              );
+'''
+          new = '''              ui.label(
+                  egui::RichText::new(
+                      "Applying updates the runtime snapshot and saves non-secret preferences for the next launch.",
+                  )
+                  .weak(),
+              );
+'''
+          if old not in text:
+              raise SystemExit('apply helper snippet not found')
+          text = text.replace(old, new, 1)
+
+          desktop.write_text(text)
+
+          docs = Path('docs/runtime-settings.md')
+          text = docs.read_text()
+          old = '''## 8. Persistence cua settings
+
+MVP co the tach hai nhom:
+
+Safe preferences co the remember:
+
+```text
+Data Root
+flow toggles
+OmniVoice URL
+voice name
+voice variant
+language
+quality preset
+read section titles
+download concurrency
+```
+
+Secrets mac dinh memory-only:
+
+```text
+Pexels API Key
+OmniVoice API Token
+```
+
+Future:
+
+```text
+Remember securely
+```
+
+va dung OS credential store.
+
+Khong tu y luu plaintext secret vao app config.
+'''
+          new = '''## 8. Persistence cua settings
+
+Safe preferences duoc persist tu dong khi user bam `Apply settings` va duoc load lai khi Video Prepare khoi dong lan sau:
+
+```text
+Data Root
+flow toggles
+OmniVoice URL
+voice name
+voice variant
+language
+quality preset
+read section titles
+download concurrency
+```
+
+Preferences file nam trong application config directory cua OS:
+
+```text
+macOS   ~/Library/Application Support/video-prepare/preferences.json
+Windows %APPDATA%/video-prepare/preferences.json
+Linux   $XDG_CONFIG_HOME/video-prepare/preferences.json
+        hoac ~/.config/video-prepare/preferences.json
+```
+
+Co the override config directory bang `VIDEO_PREPARE_CONFIG_DIR`, huu ich cho test hoac portable deployment.
+
+Secrets van mac dinh memory-only va KHONG ghi vao preferences file:
+
+```text
+Pexels API Key
+OmniVoice API Token
+```
+
+Neu can remember secret trong future, dung OS credential store thay vi plaintext app config.
+'''
+          if old not in text:
+              raise SystemExit('runtime settings persistence docs section not found')
+          docs.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Test
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Commit implementation and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/apply-settings-persistence-ui.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/settings.rs src/desktop.rs docs/runtime-settings.md .github/workflows/apply-settings-persistence-ui.yml
+          git commit -m "feat: persist runtime settings across launches"
+          git push origin HEAD:feat/persist-runtime-settings
