@@ -77,9 +77,9 @@ pub use script::{
 };
 pub use script_input::{format_script, parse_script};
 pub use settings::{
-    normalize_omnivoice_url, QualityPreset, RuntimeSecrets, RuntimeSettingsDraft,
-    RuntimeSettingsSnapshot, RuntimeSettingsStore, SafePreferences, SettingsError,
-    DEFAULT_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY,
+    extract_omnivoice_url, normalize_omnivoice_url, QualityPreset, RuntimeSecrets,
+    RuntimeSettingsDraft, RuntimeSettingsSnapshot, RuntimeSettingsStore, SafePreferences,
+    SettingsError, DEFAULT_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY,
 };
 pub use visual::{
     build_query_plan, load_visual_status, visual_status_path, AssetDownloadError, AssetDownloader,

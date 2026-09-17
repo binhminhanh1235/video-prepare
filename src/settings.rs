@@ -490,6 +490,45 @@ pub fn default_preferences_path() -> Result<PathBuf, SettingsError> {
         .map_err(|error| SettingsError::PersistenceLocation(error.to_string()))
 }
 
+pub fn extract_omnivoice_url(input: &str) -> Result<String, SettingsError> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return Err(SettingsError::MissingOmniVoiceUrl);
+    }
+
+    if !raw.contains('\n') && !raw.contains('\r') {
+        if let Ok(url) = normalize_omnivoice_url(raw, true) {
+            return Ok(url);
+        }
+    }
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some((label, value)) = trimmed.split_once(':') {
+            if label.trim().eq_ignore_ascii_case("Public REST API") {
+                return normalize_omnivoice_url(value.trim(), true);
+            }
+        }
+    }
+
+    for token in raw.split_whitespace() {
+        let candidate = token
+            .trim_matches(|ch: char| matches!(ch, '`' | '"' | ',' | ';' | '(' | ')' | '[' | ']'));
+        if (candidate.starts_with("http://") || candidate.starts_with("https://"))
+            && candidate
+                .trim_end_matches('/')
+                .to_ascii_lowercase()
+                .ends_with("/api/v1")
+        {
+            if let Ok(url) = normalize_omnivoice_url(candidate, true) {
+                return Ok(url);
+            }
+        }
+    }
+
+    Err(SettingsError::InvalidOmniVoiceUrl)
+}
+
 pub fn normalize_omnivoice_url(input: &str, required: bool) -> Result<String, SettingsError> {
     let raw = input.trim();
     if raw.is_empty() {
@@ -891,6 +930,39 @@ mod tests {
         assert_eq!(
             normalize_omnivoice_url("https://studio.example/api/v1/", true).unwrap(),
             "https://studio.example"
+        );
+    }
+
+    #[test]
+    fn omnivoice_quick_connection_extracts_public_rest_api_from_startup_output() {
+        let startup = r#"PUBLIC STUDIO UI: https://neo-station.example/ui
+Public REST API: https://neo-station.example/api/v1
+Public MCP: https://neo-station.example/mcp"#;
+        assert_eq!(
+            extract_omnivoice_url(startup).unwrap(),
+            "https://neo-station.example"
+        );
+    }
+
+    #[test]
+    fn omnivoice_quick_connection_accepts_direct_service_or_rest_url() {
+        assert_eq!(
+            extract_omnivoice_url("https://studio.example").unwrap(),
+            "https://studio.example"
+        );
+        assert_eq!(
+            extract_omnivoice_url("https://studio.example/api/v1").unwrap(),
+            "https://studio.example"
+        );
+    }
+
+    #[test]
+    fn omnivoice_quick_connection_does_not_mistake_ui_or_mcp_url_for_rest_api() {
+        let startup = r#"PUBLIC STUDIO UI: https://neo-station.example/ui
+Public MCP: https://neo-station.example/mcp"#;
+        assert_eq!(
+            extract_omnivoice_url(startup),
+            Err(SettingsError::InvalidOmniVoiceUrl)
         );
     }
 
