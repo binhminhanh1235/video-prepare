@@ -398,553 +398,898 @@ impl VideoPrepareApp {
     }
 
     fn dashboard_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Project dashboard");
-        if self.selected_project.is_none() {
-            ui.label("No project selected. Open a project from Projects first.");
-            if ui.button("Go to Projects").clicked() {
-                self.screen = Screen::Projects;
-            }
-            return;
-        }
+        egui::ScrollArea::vertical()
+  .auto_shrink([false, false])
+  .show(ui, |ui| {
+      ui.set_max_width(1040.0);
+      ui.heading(egui::RichText::new("Dashboard").size(24.0));
+      ui.label(
+          egui::RichText::new(
+              "Run the project, inspect flow health, and jump into scenes that need attention.",
+          )
+          .weak(),
+      );
+      ui.add_space(12.0);
 
-        let worker_active = self.mutation_worker_active();
-        let remote_available = self.remote_reconciliation_available(true);
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!worker_active, egui::Button::new("Run"))
-                .clicked()
-            {
-                self.start_run(RunAction::Run);
-            }
-            if ui
-                .add_enabled(!worker_active, egui::Button::new("Resume"))
-                .clicked()
-            {
-                self.start_run(RunAction::Resume);
-            }
-            if ui
-                .add_enabled(!worker_active, egui::Button::new("Retry Failed"))
-                .clicked()
-            {
-                self.start_run(RunAction::RetryFailed);
-            }
-            if ui
-                .add_enabled(
-                    !worker_active && remote_available,
-                    egui::Button::new("Reconcile Remote Audio"),
-                )
-                .clicked()
-            {
-                self.start_remote_audio_reconciliation(true);
-            }
-            if ui
-                .add_enabled(!worker_active, egui::Button::new("Refresh from disk"))
-                .clicked()
-            {
-                self.reload_selected_project();
-            }
-        });
+      if self.selected_project.is_none() {
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.label(egui::RichText::new("No project selected").strong().size(18.0));
+              ui.label(
+                  egui::RichText::new(
+                      "Open a project from Projects to see execution status and scene progress.",
+                  )
+                  .weak(),
+              );
+              ui.add_space(8.0);
+              if ui.button("Go to Projects").clicked() {
+                  self.screen = Screen::Projects;
+              }
+          });
+          return;
+      }
 
-        if let Some(worker) = &self.run_worker {
-            ui.small(format!(
-                "{} running for `{}` with settings revision {} and Data Root {}",
-                worker.action.label(),
-                worker.project_id,
-                worker.revision,
-                worker.data_root.display()
-            ));
-        }
-        if let Some(worker) = &self.flow_retry_worker {
-            ui.small(format!(
-                "{} retry running for `{}` with settings revision {} and Data Root {}",
-                worker.target.label(),
-                worker.project_id,
-                worker.revision,
-                worker.data_root.display()
-            ));
-        }
-        if let Some(worker) = &self.remote_reconcile_worker {
-            ui.small(format!(
-                "Remote Audio reconciliation running for `{}` with settings revision {} and Data Root {}",
-                worker.project_id,
-                worker.revision,
-                worker.data_root.display()
-            ));
-        }
-        if !self.run_status.is_empty() {
-            if self.run_status_is_error {
-                ui.colored_label(ui.visuals().error_fg_color, &self.run_status);
-            } else {
-                ui.label(&self.run_status);
-            }
-        }
-        if let Some(report) = &self.last_run_report {
-            ui.group(|ui| {
-                ui.strong(format!(
-                    "Last {} | settings revision {}",
-                    report.action.label(),
-                    report.settings_revision
-                ));
-                render_flow_report(ui, "Visual", &report.visual);
-                render_flow_report(ui, "Audio", &report.audio);
-            });
-        }
-        if !self.remote_reconcile_status.is_empty() {
-            if self.remote_reconcile_status_is_error {
-                ui.colored_label(ui.visuals().error_fg_color, &self.remote_reconcile_status);
-            } else {
-                ui.label(&self.remote_reconcile_status);
-            }
-        }
-        if let Some(report) = &self.last_remote_reconcile_report {
-            ui.group(|ui| render_remote_reconciliation_report(ui, report));
-        }
+      let Some(inspection) = self.inspection.clone() else {
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.colored_label(
+                  ui.visuals().error_fg_color,
+                  "Inspection is unavailable. Refresh the selected project from disk.",
+              );
+              if ui.button("Refresh from disk").clicked() {
+                  self.reload_selected_project();
+              }
+          });
+          return;
+      };
 
-        let Some(inspection) = self.inspection.clone() else {
-            ui.colored_label(
-                ui.visuals().error_fg_color,
-                "Inspection is unavailable. Refresh the selected project.",
-            );
-            return;
-        };
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.horizontal(|ui| {
+              ui.vertical(|ui| {
+                  ui.label(egui::RichText::new(&inspection.title).strong().size(20.0));
+                  ui.monospace(format!("project: {}", inspection.project_id));
+                  if let Some(project) = &self.selected_project {
+                      ui.label(
+                          egui::RichText::new(format!("Root: {}", project.root.display()))
+                              .weak(),
+                      );
+                  }
+              });
+              ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                  let incomplete = inspection.incomplete_count();
+                  ui.label(
+                      egui::RichText::new(if incomplete == 0 {
+                          "No incomplete items".to_owned()
+                      } else {
+                          format!("{incomplete} item(s) need attention")
+                      })
+                      .color(if incomplete == 0 {
+                          egui::Color32::from_rgb(134, 239, 172)
+                      } else {
+                          egui::Color32::from_rgb(250, 204, 21)
+                      }),
+                  );
+              });
+          });
+          ui.add_space(8.0);
+          ui.horizontal_wrapped(|ui| {
+              status_badge(ui, "Overall", inspection.overall);
+              status_badge(ui, "Visual", inspection.visual_flow);
+              status_badge(ui, "Audio", inspection.audio_flow);
+          });
+      });
 
-        ui.add_space(8.0);
-        ui.strong(&inspection.title);
-        ui.label(format!("Project ID: {}", inspection.project_id));
-        if let Some(project) = &self.selected_project {
-            ui.label(format!("Root: {}", project.root.display()));
-        }
-        ui.label(format!(
-            "Overall: {:?} | Visual: {:?} | Audio: {:?}",
-            inspection.overall, inspection.visual_flow, inspection.audio_flow
-        ));
-        ui.label(format!(
-            "Incomplete / error items: {}",
-            inspection.incomplete_count()
-        ));
+      ui.add_space(12.0);
+      let worker_active = self.mutation_worker_active();
+      let remote_available = self.remote_reconciliation_available(true);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.label(egui::RichText::new("Project actions").strong().size(18.0));
+          ui.label(
+              egui::RichText::new(
+                  "Run all enabled flows, continue interrupted work, or retry failed work without leaving this screen.",
+              )
+              .weak(),
+          );
+          ui.add_space(8.0);
+          ui.horizontal_wrapped(|ui| {
+              if ui
+                  .add_enabled(!worker_active, egui::Button::new("Run project"))
+                  .clicked()
+              {
+                  self.start_run(RunAction::Run);
+              }
+              if ui
+                  .add_enabled(!worker_active, egui::Button::new("Resume"))
+                  .clicked()
+              {
+                  self.start_run(RunAction::Resume);
+              }
+              if ui
+                  .add_enabled(!worker_active, egui::Button::new("Retry failed"))
+                  .clicked()
+              {
+                  self.start_run(RunAction::RetryFailed);
+              }
+              if ui
+                  .add_enabled(
+                      !worker_active && remote_available,
+                      egui::Button::new("Reconcile remote audio"),
+                  )
+                  .clicked()
+              {
+                  self.start_remote_audio_reconciliation(true);
+              }
+              if ui
+                  .add_enabled(!worker_active, egui::Button::new("Refresh from disk"))
+                  .clicked()
+              {
+                  self.reload_selected_project();
+              }
+              if worker_active {
+                  ui.spinner();
+                  ui.label(egui::RichText::new("Background work in progress").weak());
+              }
+          });
+      });
 
-        if !inspection.problems.is_empty() {
-            ui.add_space(8.0);
-            ui.group(|ui| {
-                ui.strong("Incomplete / errors");
-                for problem in &inspection.problems {
-                    ui.colored_label(
-                        ui.visuals().error_fg_color,
-                        format!(
-                            "{} [{} / {}]: {}",
-                            problem.scope,
-                            problem.area,
-                            state_text(problem.state),
-                            problem.message
-                        ),
-                    );
-                }
-            });
-        }
+      let has_activity = self.run_worker.is_some()
+          || self.flow_retry_worker.is_some()
+          || self.remote_reconcile_worker.is_some()
+          || !self.run_status.is_empty()
+          || !self.remote_reconcile_status.is_empty()
+          || self.last_run_report.is_some()
+          || self.last_remote_reconcile_report.is_some();
+      if has_activity {
+          ui.add_space(12.0);
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.label(egui::RichText::new("Activity").strong().size(18.0));
+              if let Some(worker) = &self.run_worker {
+                  ui.label(format!(
+                      "{} running for `{}` with settings revision {}.",
+                      worker.action.label(), worker.project_id, worker.revision
+                  ));
+                  ui.small(format!("Data Root: {}", worker.data_root.display()));
+              }
+              if let Some(worker) = &self.flow_retry_worker {
+                  ui.label(format!(
+                      "{} retry running for `{}` with settings revision {}.",
+                      worker.target.label(), worker.project_id, worker.revision
+                  ));
+              }
+              if let Some(worker) = &self.remote_reconcile_worker {
+                  ui.label(format!(
+                      "Remote audio reconciliation running for `{}` with settings revision {}.",
+                      worker.project_id, worker.revision
+                  ));
+              }
+              if !self.run_status.is_empty() {
+                  if self.run_status_is_error {
+                      ui.colored_label(ui.visuals().error_fg_color, &self.run_status);
+                  } else {
+                      ui.label(&self.run_status);
+                  }
+              }
+              if let Some(report) = &self.last_run_report {
+                  ui.separator();
+                  ui.strong(format!(
+                      "Last {} | settings revision {}",
+                      report.action.label(), report.settings_revision
+                  ));
+                  render_flow_report(ui, "Visual", &report.visual);
+                  render_flow_report(ui, "Audio", &report.audio);
+              }
+              if !self.remote_reconcile_status.is_empty() {
+                  if self.remote_reconcile_status_is_error {
+                      ui.colored_label(
+                          ui.visuals().error_fg_color,
+                          &self.remote_reconcile_status,
+                      );
+                  } else {
+                      ui.label(&self.remote_reconcile_status);
+                  }
+              }
+              if let Some(report) = &self.last_remote_reconcile_report {
+                  ui.separator();
+                  render_remote_reconciliation_report(ui, report);
+              }
+          });
+      }
 
-        ui.add_space(10.0);
-        ui.strong("Scenes");
-        for scene in inspection.scenes {
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.strong(format!(
-                            "{}  {}-{}",
-                            scene.id, scene.start_time, scene.end_time
-                        ));
-                        ui.label(format!(
-                            "visual: {} | audio: {}",
-                            state_text(scene.visual_state),
-                            state_text(scene.audio_state)
-                        ));
-                        if scene.visual_detail_available {
-                            let completed = scene
-                                .visual_requests
-                                .iter()
-                                .filter(|request| request.state == crate::TaskState::Completed)
-                                .count();
-                            ui.small(format!(
-                                "visual requests: {completed}/{} completed",
-                                scene.visual_requests.len()
-                            ));
-                        } else {
-                            ui.colored_label(
-                                ui.visuals().error_fg_color,
-                                "visual request detail unavailable",
-                            );
-                        }
-                    });
-                    if ui.button("Inspect Scene").clicked() {
-                        self.selected_scene_id = Some(scene.id.clone());
-                        self.screen = Screen::Scene;
-                    }
-                });
-            });
-            ui.add_space(4.0);
-        }
+      if !inspection.problems.is_empty() {
+          ui.add_space(12.0);
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.label(egui::RichText::new("Needs attention").strong().size(18.0));
+              ui.label(
+                  egui::RichText::new(
+                      "Resolve these items or retry the affected flow before considering the project complete.",
+                  )
+                  .weak(),
+              );
+              ui.add_space(6.0);
+              for problem in &inspection.problems {
+                  ui.horizontal_wrapped(|ui| {
+                      status_badge(ui, &problem.area, problem.state);
+                      ui.strong(&problem.scope);
+                      ui.label(&problem.message);
+                  });
+              }
+          });
+      }
+
+      ui.add_space(16.0);
+      ui.horizontal(|ui| {
+          ui.heading(egui::RichText::new("Scenes").size(20.0));
+          ui.label(
+              egui::RichText::new(format!("{} total", inspection.scenes.len())).weak(),
+          );
+      });
+      ui.add_space(6.0);
+
+      for scene in inspection.scenes {
+          let scene_id = scene.id.clone();
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.horizontal(|ui| {
+                  ui.vertical(|ui| {
+                      ui.label(
+                          egui::RichText::new(format!(
+                              "{}  |  {} to {}",
+                              scene.id, scene.start_time, scene.end_time
+                          ))
+                          .strong()
+                          .size(17.0),
+                      );
+                      ui.horizontal_wrapped(|ui| {
+                          status_badge(ui, "Visual", scene.visual_state);
+                          status_badge(ui, "Audio", scene.audio_state);
+                      });
+                      if scene.visual_detail_available {
+                          let total = scene.visual_requests.len();
+                          let completed = scene
+                              .visual_requests
+                              .iter()
+                              .filter(|request| {
+                                  request.state == crate::TaskState::Completed
+                              })
+                              .count();
+                          let progress = if total == 0 {
+                              0.0
+                          } else {
+                              completed as f32 / total as f32
+                          };
+                          ui.add(
+                              egui::ProgressBar::new(progress)
+                                  .desired_width(280.0)
+                                  .text(format!(
+                                      "{completed}/{total} visual requests complete"
+                                  )),
+                          );
+                      } else {
+                          ui.colored_label(
+                              ui.visuals().error_fg_color,
+                              "Visual request detail unavailable",
+                          );
+                      }
+                  });
+                  ui.with_layout(
+                      egui::Layout::right_to_left(egui::Align::Center),
+                      |ui| {
+                          if ui.button("Inspect scene").clicked() {
+                              self.selected_scene_id = Some(scene_id.clone());
+                              self.screen = Screen::Scene;
+                          }
+                      },
+                  );
+              });
+          });
+          ui.add_space(6.0);
+      }
+  });
     }
 
     fn scene_detail_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Scene detail");
-        let Some(inspection) = self.inspection.clone() else {
-            ui.label("No inspected project is selected.");
-            return;
-        };
-        let Some(scene_id) = self.selected_scene_id.clone() else {
-            ui.label("Choose Inspect Scene from the project dashboard.");
-            if ui.button("Go to Dashboard").clicked() {
-                self.screen = Screen::Dashboard;
-            }
-            return;
-        };
-        let Some(scene) = inspection.scene(&scene_id).cloned() else {
-            ui.colored_label(
-                ui.visuals().error_fg_color,
-                format!("Scene `{scene_id}` no longer exists in the inspected project."),
-            );
-            return;
-        };
+        egui::ScrollArea::vertical()
+  .auto_shrink([false, false])
+  .show(ui, |ui| {
+      ui.set_max_width(1040.0);
+      ui.heading(egui::RichText::new("Scene detail").size(24.0));
+      ui.label(
+          egui::RichText::new(
+              "Inspect one scene, review asset requests, and take over manually when automation cannot finish the job.",
+          )
+          .weak(),
+      );
+      ui.add_space(12.0);
 
-        let mutation_busy = self.mutation_worker_active();
-        ui.horizontal(|ui| {
-            if ui.button("Back to Dashboard").clicked() {
-                self.screen = Screen::Dashboard;
-            }
-            if ui
-                .add_enabled(!mutation_busy, egui::Button::new("Refresh from disk"))
-                .clicked()
-            {
-                self.reload_selected_project();
-            }
-        });
-        ui.add_space(8.0);
-        ui.strong(format!("{} - {}", inspection.title, scene.id));
-        ui.label(format!(
-            "Narration window: {} to {}",
-            scene.start_time, scene.end_time
-        ));
-        ui.label(format!(
-            "Visual: {} | Audio: {}",
-            state_text(scene.visual_state),
-            state_text(scene.audio_state)
-        ));
+      let Some(inspection) = self.inspection.clone() else {
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.label("No inspected project is selected.");
+              if ui.button("Go to Dashboard").clicked() {
+                  self.screen = Screen::Dashboard;
+              }
+          });
+          return;
+      };
+      let Some(scene_id) = self.selected_scene_id.clone() else {
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.label("Choose a scene from the Dashboard first.");
+              if ui.button("Go to Dashboard").clicked() {
+                  self.screen = Screen::Dashboard;
+              }
+          });
+          return;
+      };
+      let Some(scene) = inspection.scene(&scene_id).cloned() else {
+          ui.colored_label(
+              ui.visuals().error_fg_color,
+              format!("Scene `{scene_id}` no longer exists in the inspected project."),
+          );
+          return;
+      };
 
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.strong("Flow retry");
-            ui.small(
-                "These are project-level flow retries triggered from Scene detail. They do not imply targeted per-scene execution.",
-            );
-            ui.horizontal(|ui| {
-                let visual_retryable = retryable_flow_state(inspection.visual_flow);
-                if ui
-                    .add_enabled(
-                        !mutation_busy && visual_retryable,
-                        egui::Button::new("Retry Visual Flow"),
-                    )
-                    .clicked()
-                {
-                    self.start_flow_retry(FlowTarget::Visual);
-                }
-                let audio_retryable = retryable_flow_state(inspection.audio_flow);
-                if ui
-                    .add_enabled(
-                        !mutation_busy && audio_retryable,
-                        egui::Button::new("Retry Audio Flow"),
-                    )
-                    .clicked()
-                {
-                    self.start_flow_retry(FlowTarget::Audio);
-                }
-            });
-            if !retryable_flow_state(inspection.visual_flow) {
-                ui.small(format!(
-                    "Visual Flow is {}, so Retry Visual Flow is not applicable.",
-                    state_text(inspection.visual_flow)
-                ));
-            }
-            if !retryable_flow_state(inspection.audio_flow) {
-                ui.small(format!(
-                    "Audio Flow is {}, so Retry Audio Flow is not applicable.",
-                    state_text(inspection.audio_flow)
-                ));
-            }
-            if let Some(worker) = &self.flow_retry_worker {
-                ui.small(format!(
-                    "{} retry running with settings revision {}.",
-                    worker.target.label(),
-                    worker.revision
-                ));
-            }
-            if !self.flow_retry_status.is_empty() {
-                if self.flow_retry_status_is_error {
-                    ui.colored_label(ui.visuals().error_fg_color, &self.flow_retry_status);
-                } else {
-                    ui.label(&self.flow_retry_status);
-                }
-            }
-            if let Some(report) = &self.last_flow_retry_report {
-                render_flow_report(ui, report.target.label(), &report.flow);
-            }
-        });
+      let mutation_busy = self.mutation_worker_active();
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.horizontal_wrapped(|ui| {
+              if ui.button("Back to Dashboard").clicked() {
+                  self.screen = Screen::Dashboard;
+              }
+              if ui
+                  .add_enabled(!mutation_busy, egui::Button::new("Refresh from disk"))
+                  .clicked()
+              {
+                  self.reload_selected_project();
+              }
+              if mutation_busy {
+                  ui.spinner();
+                  ui.label(egui::RichText::new("Background work in progress").weak());
+              }
+          });
+          ui.add_space(8.0);
+          ui.label(
+              egui::RichText::new(format!("{}  /  {}", inspection.title, scene.id))
+                  .strong()
+                  .size(20.0),
+          );
+          ui.label(
+              egui::RichText::new(format!(
+                  "Narration window: {} to {}",
+                  scene.start_time, scene.end_time
+              ))
+              .weak(),
+          );
+          ui.horizontal_wrapped(|ui| {
+              status_badge(ui, "Visual", scene.visual_state);
+              status_badge(ui, "Audio", scene.audio_state);
+          });
+      });
 
-        ui.add_space(10.0);
-        ui.group(|ui| {
-            ui.strong("Manual visual takeover");
-            ui.small(
-                "Choose a local image/video. Video Prepare copies it into the project, stores checksum/provenance, and does not persist the original absolute path.",
-            );
-            ui.horizontal(|ui| {
-                ui.label("Local file");
-                ui.text_edit_singleline(&mut self.manual_visual_path);
-            });
-            if let Some(worker) = &self.manual_visual_worker {
-                ui.small(format!(
-                    "Importing {} / {} for project `{}`...",
-                    worker.scene_id, worker.visual_id, worker.project_id
-                ));
-            }
-            if !self.manual_visual_status.is_empty() {
-                if self.manual_visual_status_is_error {
-                    ui.colored_label(ui.visuals().error_fg_color, &self.manual_visual_status);
-                } else {
-                    ui.label(&self.manual_visual_status);
-                }
-            }
-            if let Some(summary) = &self.last_manual_visual_import {
-                ui.small(format!(
-                    "Last import: {}/{} slot {} -> {} ({:?}).",
-                    summary.scene_id,
-                    summary.visual_id,
-                    summary.slot,
-                    summary.relative_path,
-                    summary.request_state
-                ));
-            }
-        });
+      ui.add_space(12.0);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.label(egui::RichText::new("Flow recovery").strong().size(18.0));
+          ui.label(
+              egui::RichText::new(
+                  "Retries are project-level flow actions. They may touch more than this scene.",
+              )
+              .weak(),
+          );
+          ui.add_space(8.0);
+          ui.horizontal_wrapped(|ui| {
+              let visual_retryable = retryable_flow_state(inspection.visual_flow);
+              if ui
+                  .add_enabled(
+                      !mutation_busy && visual_retryable,
+                      egui::Button::new("Retry visual flow"),
+                  )
+                  .clicked()
+              {
+                  self.start_flow_retry(FlowTarget::Visual);
+              }
+              let audio_retryable = retryable_flow_state(inspection.audio_flow);
+              if ui
+                  .add_enabled(
+                      !mutation_busy && audio_retryable,
+                      egui::Button::new("Retry audio flow"),
+                  )
+                  .clicked()
+              {
+                  self.start_flow_retry(FlowTarget::Audio);
+              }
+              status_badge(ui, "Visual flow", inspection.visual_flow);
+              status_badge(ui, "Audio flow", inspection.audio_flow);
+          });
+          if let Some(worker) = &self.flow_retry_worker {
+              ui.add_space(6.0);
+              ui.label(format!(
+                  "{} retry running with settings revision {}.",
+                  worker.target.label(), worker.revision
+              ));
+          }
+          if !self.flow_retry_status.is_empty() {
+              if self.flow_retry_status_is_error {
+                  ui.colored_label(ui.visuals().error_fg_color, &self.flow_retry_status);
+              } else {
+                  ui.label(&self.flow_retry_status);
+              }
+          }
+          if let Some(report) = &self.last_flow_retry_report {
+              ui.separator();
+              render_flow_report(ui, report.target.label(), &report.flow);
+          }
+      });
 
-        ui.add_space(10.0);
-        ui.group(|ui| {
-            ui.strong("Visual requests");
-            if !scene.visual_detail_available {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    "Visual status detail could not be loaded. See Dashboard errors.",
-                );
-            } else {
-                for request in &scene.visual_requests {
-                    ui.separator();
-                    ui.label(format!(
-                        "{}: {} | assets {}/{}",
-                        request.id,
-                        state_text(request.state),
-                        request.completed_assets,
-                        request.target_count
-                    ));
-                    if !request.attempted_queries.is_empty() {
-                        ui.small(format!(
-                            "attempted queries: {}",
-                            request.attempted_queries.join(" | ")
-                        ));
-                    }
-                    if let Some(query) = &request.successful_query {
-                        ui.small(format!("successful query: {query}"));
-                    }
-                    if let Some(error) = &request.last_error {
-                        ui.colored_label(ui.visuals().error_fg_color, error);
-                    }
-                    if request.completed_assets < request.target_count as usize {
-                        let source_ready = !self.manual_visual_path.trim().is_empty();
-                        if ui
-                            .add_enabled(
-                                !mutation_busy && source_ready,
-                                egui::Button::new(format!("Import local file into {}", request.id)),
-                            )
-                            .clicked()
-                        {
-                            self.start_manual_visual_import(&scene.id, &request.id);
-                        }
-                    }
-                }
-            }
-        });
+      ui.add_space(12.0);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.label(
+              egui::RichText::new("Manual visual takeover")
+                  .strong()
+                  .size(18.0),
+          );
+          ui.label(
+              egui::RichText::new(
+                  "Provide a local image or video when a stock request cannot be satisfied. The original absolute path is not persisted.",
+              )
+              .weak(),
+          );
+          ui.add_space(8.0);
+          ui.label(egui::RichText::new("Local image / video file").strong());
+          ui.add_sized(
+              [ui.available_width(), 34.0],
+              egui::TextEdit::singleline(&mut self.manual_visual_path)
+                  .hint_text("/path/to/local/asset.mp4"),
+          );
+          if let Some(worker) = &self.manual_visual_worker {
+              ui.add_space(6.0);
+              ui.label(format!(
+                  "Importing {} / {} for project `{}`...",
+                  worker.scene_id, worker.visual_id, worker.project_id
+              ));
+          }
+          if !self.manual_visual_status.is_empty() {
+              if self.manual_visual_status_is_error {
+                  ui.colored_label(
+                      ui.visuals().error_fg_color,
+                      &self.manual_visual_status,
+                  );
+              } else {
+                  ui.label(&self.manual_visual_status);
+              }
+          }
+          if let Some(summary) = &self.last_manual_visual_import {
+              ui.small(format!(
+                  "Last import: {}/{} slot {} -> {} ({:?}).",
+                  summary.scene_id,
+                  summary.visual_id,
+                  summary.slot,
+                  summary.relative_path,
+                  summary.request_state
+              ));
+          }
+      });
 
-        ui.add_space(10.0);
-        ui.group(|ui| {
-            ui.strong("Audio flow / remote attempts");
-            ui.label(format!("Flow: {}", state_text(inspection.audio.state)));
-            if !inspection.audio.detail_available {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    "Audio status detail could not be loaded. See Dashboard errors.",
-                );
-            } else if inspection.audio.attempts.is_empty() {
-                ui.label("No remote audio attempt has been submitted yet.");
-            } else {
-                for attempt in &inspection.audio.attempts {
-                    ui.separator();
-                    ui.label(format!(
-                        "{}: {}",
-                        attempt.attempt_id,
-                        state_text(attempt.state)
-                    ));
-                    ui.small(format!("server: {}", attempt.server_base_url));
-                    ui.small(format!("remote project: {}", attempt.remote_project_id));
-                    ui.small(format!(
-                        "job: {}",
-                        attempt.job_id.as_deref().unwrap_or("not assigned")
-                    ));
-                    if let Some(error) = &attempt.last_error {
-                        ui.colored_label(ui.visuals().error_fg_color, error);
-                    }
-                }
-            }
-        });
+      ui.add_space(16.0);
+      ui.heading(egui::RichText::new("Visual requests").size(20.0));
+      ui.add_space(6.0);
+      if !scene.visual_detail_available {
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.colored_label(
+                  ui.visuals().error_fg_color,
+                  "Visual status detail could not be loaded. See Dashboard for project-level errors.",
+              );
+          });
+      } else if scene.visual_requests.is_empty() {
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.label("This scene has no visual requests.");
+          });
+      } else {
+          for request in &scene.visual_requests {
+              egui::Frame::group(ui.style()).show(ui, |ui| {
+                  ui.set_min_width(ui.available_width());
+                  ui.horizontal(|ui| {
+                      ui.label(
+                          egui::RichText::new(&request.id).strong().size(17.0),
+                      );
+                      ui.with_layout(
+                          egui::Layout::right_to_left(egui::Align::Center),
+                          |ui| status_badge(ui, "Status", request.state),
+                      );
+                  });
+                  let target = request.target_count as usize;
+                  let progress = if target == 0 {
+                      1.0
+                  } else {
+                      request.completed_assets as f32 / target as f32
+                  };
+                  ui.add(
+                      egui::ProgressBar::new(progress.clamp(0.0, 1.0))
+                          .desired_width(320.0)
+                          .text(format!(
+                              "{}/{} assets ready",
+                              request.completed_assets, target
+                          )),
+                  );
+                  if !request.attempted_queries.is_empty() {
+                      ui.small(format!(
+                          "Attempted queries: {}",
+                          request.attempted_queries.join(" | ")
+                      ));
+                  }
+                  if let Some(query) = &request.successful_query {
+                      ui.small(format!("Successful query: {query}"));
+                  }
+                  if let Some(error) = &request.last_error {
+                      ui.colored_label(ui.visuals().error_fg_color, error);
+                  }
+                  if request.completed_assets < target {
+                      ui.add_space(6.0);
+                      let source_ready = !self.manual_visual_path.trim().is_empty();
+                      if ui
+                          .add_enabled(
+                              !mutation_busy && source_ready,
+                              egui::Button::new(format!(
+                                  "Use local file for {}",
+                                  request.id
+                              )),
+                          )
+                          .clicked()
+                      {
+                          self.start_manual_visual_import(&scene.id, &request.id);
+                      }
+                      if !source_ready {
+                          ui.label(
+                              egui::RichText::new(
+                                  "Choose a local file above to enable manual takeover.",
+                              )
+                              .weak(),
+                          );
+                      }
+                  }
+              });
+              ui.add_space(6.0);
+          }
+      }
+
+      ui.add_space(16.0);
+      ui.heading(egui::RichText::new("Audio flow").size(20.0));
+      ui.add_space(6.0);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.horizontal_wrapped(|ui| {
+              status_badge(ui, "Flow", inspection.audio.state);
+              ui.label(
+                  egui::RichText::new(format!(
+                      "{} remote attempt(s)",
+                      inspection.audio.attempts.len()
+                  ))
+                  .weak(),
+              );
+          });
+          if !inspection.audio.detail_available {
+              ui.colored_label(
+                  ui.visuals().error_fg_color,
+                  "Audio status detail could not be loaded. See Dashboard for project-level errors.",
+              );
+          } else if inspection.audio.attempts.is_empty() {
+              ui.label("No remote audio attempt has been submitted yet.");
+          } else {
+              for attempt in &inspection.audio.attempts {
+                  ui.separator();
+                  ui.horizontal_wrapped(|ui| {
+                      ui.strong(&attempt.attempt_id);
+                      status_badge(ui, "Status", attempt.state);
+                  });
+                  ui.small(format!("Server: {}", attempt.server_base_url));
+                  ui.small(format!(
+                      "Remote project: {}",
+                      attempt.remote_project_id
+                  ));
+                  ui.small(format!(
+                      "Job: {}",
+                      attempt.job_id.as_deref().unwrap_or("not assigned")
+                  ));
+                  if let Some(error) = &attempt.last_error {
+                      ui.colored_label(ui.visuals().error_fg_color, error);
+                  }
+              }
+          }
+      });
+  });
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Runtime Settings");
-        ui.label(format!(
-            "Applied revision: {}",
-            self.settings.current().revision
-        ));
-        ui.add_space(8.0);
+        egui::ScrollArea::vertical()
+  .auto_shrink([false, false])
+  .show(ui, |ui| {
+      ui.set_max_width(1040.0);
+      ui.heading(egui::RichText::new("Settings").size(24.0));
+      ui.label(
+          egui::RichText::new(
+              "Configure the Data Root and runtime integrations used by Visual and Audio flows.",
+          )
+          .weak(),
+      );
+      ui.add_space(8.0);
+      ui.horizontal_wrapped(|ui| {
+          ui.label(
+              egui::RichText::new(format!(
+                  "Applied revision {}",
+                  self.settings.current().revision
+              ))
+              .monospace(),
+          );
+          ui.label(
+              egui::RichText::new(
+                  "Changes below remain a draft until you click Apply settings.",
+              )
+              .weak(),
+          );
+      });
 
-        let connection_busy = self.connection_worker.is_some();
+      let connection_busy = self.connection_worker.is_some();
 
-        ui.group(|ui| {
-            ui.strong("Project");
-            ui.horizontal(|ui| {
-                ui.label("Data Root");
-                ui.text_edit_singleline(&mut self.draft.data_root);
-            });
-        });
+      ui.add_space(12.0);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.label(egui::RichText::new("Project storage").strong().size(18.0));
+          ui.label(
+              egui::RichText::new(
+                  "All project state, generated assets, and resume metadata live under this Data Root.",
+              )
+              .weak(),
+          );
+          ui.add_space(8.0);
+          ui.label(egui::RichText::new("Data Root").strong());
+          ui.add_sized(
+              [ui.available_width(), 34.0],
+              egui::TextEdit::singleline(&mut self.draft.data_root)
+                  .hint_text("video-prepare-data"),
+          );
+      });
 
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.strong("Flows");
-            ui.checkbox(&mut self.draft.visual_flow_enabled, "Visual Flow");
-            ui.checkbox(&mut self.draft.audio_flow_enabled, "Audio Flow");
-        });
+      ui.add_space(12.0);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.label(egui::RichText::new("Flows").strong().size(18.0));
+          ui.label(
+              egui::RichText::new(
+                  "Disable a flow when you want to prepare only visuals or only narration.",
+              )
+              .weak(),
+          );
+          ui.add_space(8.0);
+          ui.horizontal_wrapped(|ui| {
+              ui.checkbox(&mut self.draft.visual_flow_enabled, "Visual Flow");
+              ui.checkbox(&mut self.draft.audio_flow_enabled, "Audio Flow");
+          });
+      });
 
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.strong("Visual");
-            ui.horizontal(|ui| {
-                ui.label("Pexels API Key");
-                ui.add(egui::TextEdit::singleline(&mut self.draft.pexels_api_key).password(true));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Download concurrency");
-                ui.add(egui::DragValue::new(&mut self.draft.download_concurrency).range(1..=32));
-            });
-            if ui
-                .add_enabled(!connection_busy, egui::Button::new("Test Pexels"))
-                .clicked()
-            {
-                self.start_connection_test(ConnectionTestTarget::Pexels);
-            }
-            ui.small("The test uses a copy of the current draft. Secrets remain memory-only.");
-        });
+      ui.add_space(12.0);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.label(
+              egui::RichText::new("Visual provider - Pexels")
+                  .strong()
+                  .size(18.0),
+          );
+          ui.label(
+              egui::RichText::new(
+                  "Used to search and download stock images and videos for visual requests.",
+              )
+              .weak(),
+          );
+          ui.add_space(8.0);
+          ui.label(egui::RichText::new("Pexels API Key").strong());
+          ui.add_sized(
+              [ui.available_width(), 34.0],
+              egui::TextEdit::singleline(&mut self.draft.pexels_api_key)
+                  .password(true)
+                  .hint_text("Paste API key"),
+          );
+          ui.add_space(8.0);
+          ui.horizontal_wrapped(|ui| {
+              ui.label(egui::RichText::new("Download concurrency").strong());
+              ui.add(
+                  egui::DragValue::new(&mut self.draft.download_concurrency)
+                      .range(1..=32),
+              );
+              if ui
+                  .add_enabled(!connection_busy, egui::Button::new("Test Pexels"))
+                  .clicked()
+              {
+                  self.start_connection_test(ConnectionTestTarget::Pexels);
+              }
+              if connection_busy {
+                  ui.spinner();
+              }
+          });
+          ui.small("Connection tests use a captured copy of the draft. Secrets stay memory-only.");
+      });
 
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.strong("Audio");
-            field(ui, "OmniVoice URL", &mut self.draft.omnivoice_url);
-            ui.horizontal(|ui| {
-                ui.label("API Token");
-                ui.add(egui::TextEdit::singleline(&mut self.draft.omnivoice_token).password(true));
-            });
-            field(ui, "Voice", &mut self.draft.voice_name);
-            field(ui, "Variant", &mut self.draft.voice_variant);
-            field(ui, "Language", &mut self.draft.language);
-            ui.horizontal(|ui| {
-                ui.label("Quality");
-                egui::ComboBox::from_id_salt("quality-preset")
-                    .selected_text(self.draft.quality_preset.as_str())
-                    .show_ui(ui, |ui| {
-                        for preset in QualityPreset::ALL {
-                            ui.selectable_value(
-                                &mut self.draft.quality_preset,
-                                preset,
-                                preset.as_str(),
-                            );
-                        }
-                    });
-            });
-            ui.checkbox(&mut self.draft.read_section_titles, "Read section titles");
-            if ui
-                .add_enabled(!connection_busy, egui::Button::new("Test OmniVoice"))
-                .clicked()
-            {
-                self.start_connection_test(ConnectionTestTarget::OmniVoice);
-            }
-        });
+      ui.add_space(12.0);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.label(
+              egui::RichText::new("Audio provider - OmniVoice")
+                  .strong()
+                  .size(18.0),
+          );
+          ui.label(
+              egui::RichText::new(
+                  "Configure the current OmniVoice Studio endpoint and the narration defaults sent with project jobs.",
+              )
+              .weak(),
+          );
+          ui.add_space(8.0);
 
-        if let Some(worker) = &self.connection_worker {
-            ui.add_space(8.0);
-            ui.small(format!(
-                "Testing {} with a captured draft. Applied revision at start: {}.",
-                worker.target.label(),
-                worker.applied_revision_at_start
-            ));
-        }
-        if !self.connection_status.is_empty() {
-            ui.add_space(6.0);
-            if self.connection_status_is_error {
-                ui.colored_label(ui.visuals().error_fg_color, &self.connection_status);
-            } else {
-                ui.label(&self.connection_status);
-            }
-        }
-        if let Some(report) = &self.last_connection_report {
-            ui.add_space(6.0);
-            ui.group(|ui| render_connection_report(ui, report));
-        }
+          ui.label(egui::RichText::new("OmniVoice URL").strong());
+          ui.add_sized(
+              [ui.available_width(), 34.0],
+              egui::TextEdit::singleline(&mut self.draft.omnivoice_url)
+                  .hint_text("https://your-current-domain.example/api/v1"),
+          );
+          ui.add_space(6.0);
+          ui.label(egui::RichText::new("API Token").strong());
+          ui.add_sized(
+              [ui.available_width(), 34.0],
+              egui::TextEdit::singleline(&mut self.draft.omnivoice_token)
+                  .password(true)
+                  .hint_text("Optional token"),
+          );
+          ui.add_space(6.0);
+          ui.label(egui::RichText::new("Voice").strong());
+          ui.add_sized(
+              [ui.available_width(), 34.0],
+              egui::TextEdit::singleline(&mut self.draft.voice_name)
+                  .hint_text("Narrator"),
+          );
+          ui.add_space(6.0);
+          ui.label(egui::RichText::new("Variant").strong());
+          ui.add_sized(
+              [ui.available_width(), 34.0],
+              egui::TextEdit::singleline(&mut self.draft.voice_variant)
+                  .hint_text("AUTO"),
+          );
+          ui.add_space(6.0);
+          ui.label(egui::RichText::new("Language").strong());
+          ui.add_sized(
+              [ui.available_width(), 34.0],
+              egui::TextEdit::singleline(&mut self.draft.language).hint_text("en"),
+          );
+          ui.add_space(8.0);
+          ui.horizontal_wrapped(|ui| {
+              ui.label(egui::RichText::new("Quality").strong());
+              egui::ComboBox::from_id_salt("quality-preset")
+                  .selected_text(self.draft.quality_preset.as_str())
+                  .show_ui(ui, |ui| {
+                      for preset in QualityPreset::ALL {
+                          ui.selectable_value(
+                              &mut self.draft.quality_preset,
+                              preset,
+                              preset.as_str(),
+                          );
+                      }
+                  });
+              ui.checkbox(
+                  &mut self.draft.read_section_titles,
+                  "Read section titles",
+              );
+              if ui
+                  .add_enabled(!connection_busy, egui::Button::new("Test OmniVoice"))
+                  .clicked()
+              {
+                  self.start_connection_test(ConnectionTestTarget::OmniVoice);
+              }
+              if connection_busy {
+                  ui.spinner();
+              }
+          });
+      });
 
-        ui.add_space(10.0);
-        let mut refresh_catalog = false;
-        ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
-                self.draft = self.settings.draft();
-                self.status = "Draft restored from the last applied runtime snapshot.".to_owned();
-                self.status_is_error = false;
-            }
-            if ui.button("Apply").clicked() {
-                let previous_root = self.settings.current().safe.data_root.clone();
-                match self.settings.apply(&self.draft) {
-                    Ok(snapshot) => {
-                        self.draft = RuntimeSettingsDraft::from_snapshot(&snapshot);
-                        self.status =
-                            format!("Applied runtime settings revision {}.", snapshot.revision);
-                        self.status_is_error = false;
-                        refresh_catalog = previous_root != snapshot.safe.data_root;
-                    }
-                    Err(error) => {
-                        self.status = error.to_string();
-                        self.status_is_error = true;
-                    }
-                }
-            }
-        });
-        if refresh_catalog {
-            self.selected_project = None;
-            self.inspection = None;
-            self.selected_scene_id = None;
-            self.last_run_report = None;
-            self.last_flow_retry_report = None;
-            self.last_remote_reconcile_report = None;
-            self.remote_reconcile_status.clear();
-            self.remote_reconcile_status_is_error = false;
-            self.refresh_projects();
-        }
+      if self.connection_worker.is_some()
+          || !self.connection_status.is_empty()
+          || self.last_connection_report.is_some()
+      {
+          ui.add_space(12.0);
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.label(egui::RichText::new("Connection test").strong().size(18.0));
+              if let Some(worker) = &self.connection_worker {
+                  ui.label(format!(
+                      "Testing {} with a captured draft. Applied revision at start: {}.",
+                      worker.target.label(), worker.applied_revision_at_start
+                  ));
+              }
+              if !self.connection_status.is_empty() {
+                  if self.connection_status_is_error {
+                      ui.colored_label(
+                          ui.visuals().error_fg_color,
+                          &self.connection_status,
+                      );
+                  } else {
+                      ui.label(&self.connection_status);
+                  }
+              }
+              if let Some(report) = &self.last_connection_report {
+                  ui.separator();
+                  render_connection_report(ui, report);
+              }
+          });
+      }
 
-        ui.add_space(8.0);
-        if self.status_is_error {
-            ui.colored_label(ui.visuals().error_fg_color, &self.status);
-        } else {
-            ui.label(&self.status);
-        }
+      ui.add_space(12.0);
+      let mut refresh_catalog = false;
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.horizontal_wrapped(|ui| {
+              if ui.button("Discard draft").clicked() {
+                  self.draft = self.settings.draft();
+                  self.status =
+                      "Draft restored from the last applied runtime snapshot.".to_owned();
+                  self.status_is_error = false;
+              }
+              if ui
+                  .button(egui::RichText::new("Apply settings").strong())
+                  .clicked()
+              {
+                  let previous_root = self.settings.current().safe.data_root.clone();
+                  match self.settings.apply(&self.draft) {
+                      Ok(snapshot) => {
+                          self.draft = RuntimeSettingsDraft::from_snapshot(&snapshot);
+                          self.status = format!(
+                              "Applied runtime settings revision {}.",
+                              snapshot.revision
+                          );
+                          self.status_is_error = false;
+                          refresh_catalog = previous_root != snapshot.safe.data_root;
+                      }
+                      Err(error) => {
+                          self.status = error.to_string();
+                          self.status_is_error = true;
+                      }
+                  }
+              }
+              ui.label(
+                  egui::RichText::new(
+                      "Applying updates the in-memory runtime snapshot used by new work.",
+                  )
+                  .weak(),
+              );
+          });
+          if !self.status.is_empty() {
+              ui.add_space(6.0);
+              if self.status_is_error {
+                  ui.colored_label(ui.visuals().error_fg_color, &self.status);
+              } else {
+                  ui.label(
+                      egui::RichText::new(&self.status)
+                          .color(egui::Color32::from_rgb(134, 239, 172)),
+                  );
+              }
+          }
+      });
+
+      if refresh_catalog {
+          self.selected_project = None;
+          self.inspection = None;
+          self.selected_scene_id = None;
+          self.last_run_report = None;
+          self.last_flow_retry_report = None;
+          self.last_remote_reconcile_report = None;
+          self.remote_reconcile_status.clear();
+          self.remote_reconcile_status_is_error = false;
+          self.refresh_projects();
+      }
+  });
     }
 
     fn refresh_projects(&mut self) {
