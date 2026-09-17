@@ -1,0 +1,111 @@
+name: Apply Data Root folder picker
+
+on:
+  push:
+    branches:
+      - feat/data-root-folder-picker
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Patch Data Root UI and dependency
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          cargo = Path('Cargo.toml')
+          text = cargo.read_text()
+          old = 'eframe = "0.33"\n'
+          new = 'eframe = "0.33"\nrfd = "0.15"\n'
+          if old not in text:
+              raise SystemExit('Cargo.toml eframe dependency not found')
+          cargo.write_text(text.replace(old, new, 1))
+
+          desktop = Path('src/desktop.rs')
+          text = desktop.read_text()
+          old = '''          ui.label(egui::RichText::new("Data Root").strong());
+          ui.add_sized(
+              [ui.available_width(), 34.0],
+              egui::TextEdit::singleline(&mut self.draft.data_root)
+                  .hint_text("video-prepare-data"),
+          );
+'''
+          new = '''          ui.label(egui::RichText::new("Data Root").strong());
+          ui.horizontal(|ui| {
+              let browse_width = 120.0;
+              let field_width =
+                  (ui.available_width() - browse_width - ui.spacing().item_spacing.x).max(220.0);
+              ui.add_sized(
+                  [field_width, 34.0],
+                  egui::TextEdit::singleline(&mut self.draft.data_root)
+                      .interactive(false)
+                      .hint_text("Choose a folder..."),
+              );
+
+              if ui
+                  .add_sized([browse_width, 34.0], egui::Button::new("Choose folder"))
+                  .clicked()
+              {
+                  let current = self.draft.data_root.trim();
+                  let mut dialog =
+                      rfd::FileDialog::new().set_title("Choose Video Prepare Data Root");
+                  if !current.is_empty() {
+                      dialog = dialog.set_directory(current);
+                  }
+                  if let Some(path) = dialog.pick_folder() {
+                      self.draft.data_root = path.to_string_lossy().into_owned();
+                      self.status =
+                          "Data Root selected. Click Apply settings to save it.".to_owned();
+                      self.status_is_error = false;
+                  }
+              }
+          });
+          ui.small(
+              "Use the system folder picker. The selected directory becomes the root for projects, assets, and resume state after Apply settings.",
+          );
+'''
+          if old not in text:
+              raise SystemExit('Data Root edit block not found')
+          desktop.write_text(text.replace(old, new, 1))
+
+          docs = Path('docs/runtime-settings.md')
+          text = docs.read_text()
+          old = '''`Data Root`\n\n- user chon thu muc luu toan bo Video Prepare data;\n- app tao `projects/` ben trong Data Root;\n'''
+          new = '''`Data Root`\n\n- user chon thu muc bang native folder picker cua OS (Finder/File Explorer/file chooser), khong can go path thu cong;\n- field Data Root tren UI la read-only va duoc cap nhat tu folder picker;\n- app tao `projects/` ben trong Data Root;\n'''
+          if old not in text:
+              raise SystemExit('Data Root docs block not found')
+          docs.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Update lockfile
+        run: cargo check --all-targets --all-features
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Test locked tree
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Commit implementation
+        shell: bash
+        run: |
+          rm .github/workflows/apply-data-root-folder-picker.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock src/desktop.rs docs/runtime-settings.md .github/workflows/apply-data-root-folder-picker.yml
+          git commit -m "feat: choose Data Root with native folder picker"
+          git push origin HEAD:feat/data-root-folder-picker
