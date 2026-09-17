@@ -11,9 +11,10 @@ use crate::{
     create_project_from_script_path, discover_projects, execute_flow_retry, execute_project_run,
     inspect_project, load_audio_status, open_project_from_data_root, reconcile_remote_audio,
     test_omnivoice_connection, test_pexels_connection, ConnectionTestReport, ConnectionTestTarget,
-    FlowRetryReport, FlowRunDisposition, FlowRunReport, FlowTarget, OmniVoiceClient, ProjectCatalog,
-    ProjectInspection, ProjectRunReport, QualityPreset, RemoteAudioReconciliationReport, RunAction,
-    RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
+    FlowRetryReport, FlowRunDisposition, FlowRunReport, FlowTarget, OmniVoiceClient,
+    ProjectCatalog, ProjectInspection, ProjectRunReport, QualityPreset,
+    RemoteAudioReconciliationReport, RunAction, RuntimeSettingsDraft, RuntimeSettingsStore,
+    StoredProject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -894,9 +895,11 @@ impl VideoPrepareApp {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let result = (|| {
-                let client = OmniVoiceClient::new(base_url, token).map_err(|error| error.to_string())?;
-                let mut project = open_project_from_data_root(&worker_data_root, &worker_project_id)
-                    .map_err(|error| error.to_string())?;
+                let client =
+                    OmniVoiceClient::new(base_url, token).map_err(|error| error.to_string())?;
+                let mut project =
+                    open_project_from_data_root(&worker_data_root, &worker_project_id)
+                        .map_err(|error| error.to_string())?;
                 reconcile_remote_audio(&client, &mut project).map_err(|error| error.to_string())
             })();
             let _ = sender.send(result);
