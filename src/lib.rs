@@ -5,6 +5,7 @@ pub mod desktop;
 pub mod diagnostics;
 pub mod inspection;
 pub mod manual_visual;
+pub mod observability;
 pub mod orchestration;
 pub mod project;
 pub mod project_catalog;
@@ -39,12 +40,14 @@ pub use inspection::{
     SceneInspection, VisualRequestInspection,
 };
 pub use manual_visual::{
-    import_manual_visual_asset, ManualVisualError, ManualVisualImportSummary,
-    MANUAL_VISUAL_PROVENANCE_SCHEMA_VERSION,
+    ManualVisualError, ManualVisualImportSummary, MANUAL_VISUAL_PROVENANCE_SCHEMA_VERSION,
+};
+pub use observability::{
+    execute_flow_retry, execute_project_run, import_manual_visual_asset, reconcile_remote_audio,
 };
 pub use orchestration::{
-    execute_flow_retry, execute_project_run, plan_audio_next_step, AudioNextStep, FlowRetryReport,
-    FlowRunDisposition, FlowRunReport, FlowTarget, ProjectRunReport, RunAction,
+    plan_audio_next_step, AudioNextStep, FlowRetryReport, FlowRunDisposition, FlowRunReport,
+    FlowTarget, ProjectRunReport, RunAction,
 };
 pub use project::{
     ProjectError, ProjectMetadata, ProjectStatus, ProjectStore, SceneRuntimeStatus, StoredProject,
@@ -66,8 +69,7 @@ pub use reconciliation::{
     reconcile_local_project, LocalReconciliationError, LocalReconciliationReport,
 };
 pub use remote_reconciliation::{
-    reconcile_remote_audio, RemoteAudioDisposition, RemoteAudioReconciliationError,
-    RemoteAudioReconciliationReport,
+    RemoteAudioDisposition, RemoteAudioReconciliationError, RemoteAudioReconciliationReport,
 };
 pub use script::{
     parse_script, MediaKind, OmniVoiceScript, OmniVoiceSection, PreparedScript, SceneSpec,
