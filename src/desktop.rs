@@ -9,11 +9,11 @@ use eframe::egui;
 
 use crate::{
     create_project_from_script_path, discover_projects, execute_flow_retry, execute_project_run,
-    inspect_project, open_project_from_data_root, test_omnivoice_connection,
-    test_pexels_connection, ConnectionTestReport, ConnectionTestTarget, FlowRetryReport,
-    FlowRunDisposition, FlowRunReport, FlowTarget, ProjectCatalog, ProjectInspection,
-    ProjectRunReport, QualityPreset, RunAction, RuntimeSettingsDraft, RuntimeSettingsStore,
-    StoredProject,
+    inspect_project, load_audio_status, open_project_from_data_root, reconcile_remote_audio,
+    test_omnivoice_connection, test_pexels_connection, ConnectionTestReport, ConnectionTestTarget,
+    FlowRetryReport, FlowRunDisposition, FlowRunReport, FlowTarget, OmniVoiceClient, ProjectCatalog,
+    ProjectInspection, ProjectRunReport, QualityPreset, RemoteAudioReconciliationReport, RunAction,
+    RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +38,13 @@ struct FlowRetryWorker {
     data_root: PathBuf,
     revision: u64,
     target: FlowTarget,
+}
+
+struct RemoteReconcileWorker {
+    receiver: Receiver<Result<RemoteAudioReconciliationReport, String>>,
+    project_id: String,
+    data_root: PathBuf,
+    revision: u64,
 }
 
 struct ConnectionWorker {
@@ -69,6 +76,10 @@ pub struct VideoPrepareApp {
     last_flow_retry_report: Option<FlowRetryReport>,
     flow_retry_status: String,
     flow_retry_status_is_error: bool,
+    remote_reconcile_worker: Option<RemoteReconcileWorker>,
+    last_remote_reconcile_report: Option<RemoteAudioReconciliationReport>,
+    remote_reconcile_status: String,
+    remote_reconcile_status_is_error: bool,
     connection_worker: Option<ConnectionWorker>,
     last_connection_report: Option<ConnectionTestReport>,
     connection_status: String,
@@ -103,6 +114,10 @@ impl Default for VideoPrepareApp {
             last_flow_retry_report: None,
             flow_retry_status: String::new(),
             flow_retry_status_is_error: false,
+            remote_reconcile_worker: None,
+            last_remote_reconcile_report: None,
+            remote_reconcile_status: String::new(),
+            remote_reconcile_status_is_error: false,
             connection_worker: None,
             last_connection_report: None,
             connection_status: String::new(),
@@ -117,6 +132,7 @@ impl eframe::App for VideoPrepareApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_run_worker(ctx);
         self.poll_flow_retry_worker(ctx);
+        self.poll_remote_reconcile_worker(ctx);
         self.poll_connection_worker(ctx);
 
         egui::TopBottomPanel::top("top-nav").show(ctx, |ui| {
@@ -139,6 +155,7 @@ impl eframe::App for VideoPrepareApp {
 
         if self.run_worker.is_some()
             || self.flow_retry_worker.is_some()
+            || self.remote_reconcile_worker.is_some()
             || self.connection_worker.is_some()
         {
             ctx.request_repaint_after(Duration::from_millis(250));
@@ -225,6 +242,7 @@ impl VideoPrepareApp {
         }
 
         let worker_active = self.mutation_worker_active();
+        let remote_available = self.remote_reconciliation_available(true);
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!worker_active, egui::Button::new("Run"))
@@ -243,6 +261,15 @@ impl VideoPrepareApp {
                 .clicked()
             {
                 self.start_run(RunAction::RetryFailed);
+            }
+            if ui
+                .add_enabled(
+                    !worker_active && remote_available,
+                    egui::Button::new("Reconcile Remote Audio"),
+                )
+                .clicked()
+            {
+                self.start_remote_audio_reconciliation(true);
             }
             if ui
                 .add_enabled(!worker_active, egui::Button::new("Refresh from disk"))
@@ -270,6 +297,14 @@ impl VideoPrepareApp {
                 worker.data_root.display()
             ));
         }
+        if let Some(worker) = &self.remote_reconcile_worker {
+            ui.small(format!(
+                "Remote Audio reconciliation running for `{}` with settings revision {} and Data Root {}",
+                worker.project_id,
+                worker.revision,
+                worker.data_root.display()
+            ));
+        }
         if !self.run_status.is_empty() {
             if self.run_status_is_error {
                 ui.colored_label(ui.visuals().error_fg_color, &self.run_status);
@@ -287,6 +322,16 @@ impl VideoPrepareApp {
                 render_flow_report(ui, "Visual", &report.visual);
                 render_flow_report(ui, "Audio", &report.audio);
             });
+        }
+        if !self.remote_reconcile_status.is_empty() {
+            if self.remote_reconcile_status_is_error {
+                ui.colored_label(ui.visuals().error_fg_color, &self.remote_reconcile_status);
+            } else {
+                ui.label(&self.remote_reconcile_status);
+            }
+        }
+        if let Some(report) = &self.last_remote_reconcile_report {
+            ui.group(|ui| render_remote_reconciliation_report(ui, report));
         }
 
         let Some(inspection) = self.inspection.clone() else {
@@ -675,6 +720,9 @@ impl VideoPrepareApp {
             self.selected_scene_id = None;
             self.last_run_report = None;
             self.last_flow_retry_report = None;
+            self.last_remote_reconcile_report = None;
+            self.remote_reconcile_status.clear();
+            self.remote_reconcile_status_is_error = false;
             self.refresh_projects();
         }
 
@@ -736,6 +784,7 @@ impl VideoPrepareApp {
                 self.project_status_is_error = false;
                 self.select_project(project);
                 self.screen = Screen::Dashboard;
+                self.start_remote_audio_reconciliation(false);
             }
             Err(error) => {
                 self.project_status = format!("Project open failed: {error}");
@@ -754,6 +803,9 @@ impl VideoPrepareApp {
         self.last_flow_retry_report = None;
         self.flow_retry_status.clear();
         self.flow_retry_status_is_error = false;
+        self.last_remote_reconcile_report = None;
+        self.remote_reconcile_status.clear();
+        self.remote_reconcile_status_is_error = false;
         self.selected_project = Some(project);
     }
 
@@ -784,7 +836,140 @@ impl VideoPrepareApp {
     }
 
     fn mutation_worker_active(&self) -> bool {
-        self.run_worker.is_some() || self.flow_retry_worker.is_some()
+        self.run_worker.is_some()
+            || self.flow_retry_worker.is_some()
+            || self.remote_reconcile_worker.is_some()
+    }
+
+    fn remote_reconciliation_available(&self, manual: bool) -> bool {
+        if self.mutation_worker_active() {
+            return false;
+        }
+        let snapshot = self.settings.current();
+        if !snapshot.safe.audio_flow_enabled || snapshot.safe.omnivoice_url.trim().is_empty() {
+            return false;
+        }
+        let Some(project) = &self.selected_project else {
+            return false;
+        };
+        let Ok(status) = load_audio_status(&project.root, &project.metadata.project_id) else {
+            return false;
+        };
+        if status.attempts.is_empty() {
+            return false;
+        }
+        manual
+            || matches!(
+                status.state,
+                crate::TaskState::Running
+                    | crate::TaskState::UnknownRemote
+                    | crate::TaskState::Partial
+            )
+    }
+
+    fn start_remote_audio_reconciliation(&mut self, manual: bool) {
+        if !self.remote_reconciliation_available(manual) {
+            if manual {
+                self.remote_reconcile_status =
+                    "Remote Audio reconciliation is not available. Enable Audio Flow, apply a valid OmniVoice URL, and ensure a remote attempt exists."
+                        .to_owned();
+                self.remote_reconcile_status_is_error = true;
+            }
+            return;
+        }
+        let Some(project_id) = self
+            .selected_project
+            .as_ref()
+            .map(|project| project.metadata.project_id.clone())
+        else {
+            return;
+        };
+        let snapshot = self.settings.current();
+        let data_root = snapshot.safe.data_root.clone();
+        let revision = snapshot.revision;
+        let base_url = snapshot.safe.omnivoice_url.clone();
+        let token = snapshot.secrets.omnivoice_token.clone();
+        let worker_project_id = project_id.clone();
+        let worker_data_root = data_root.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = (|| {
+                let client = OmniVoiceClient::new(base_url, token).map_err(|error| error.to_string())?;
+                let mut project = open_project_from_data_root(&worker_data_root, &worker_project_id)
+                    .map_err(|error| error.to_string())?;
+                reconcile_remote_audio(&client, &mut project).map_err(|error| error.to_string())
+            })();
+            let _ = sender.send(result);
+        });
+
+        self.remote_reconcile_worker = Some(RemoteReconcileWorker {
+            receiver,
+            project_id: project_id.clone(),
+            data_root,
+            revision,
+        });
+        self.last_remote_reconcile_report = None;
+        self.remote_reconcile_status = format!(
+            "Remote Audio reconciliation started for `{project_id}` with runtime settings revision {revision}."
+        );
+        self.remote_reconcile_status_is_error = false;
+    }
+
+    fn poll_remote_reconcile_worker(&mut self, ctx: &egui::Context) {
+        let outcome = match self.remote_reconcile_worker.as_ref() {
+            None => return,
+            Some(worker) => match worker.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(250));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => Some(Err(
+                    "remote-reconciliation worker disconnected before returning a result"
+                        .to_owned(),
+                )),
+            },
+        };
+        let Some(outcome) = outcome else {
+            return;
+        };
+
+        let worker = self.remote_reconcile_worker.take().expect("checked above");
+        match outcome {
+            Ok(report) => {
+                self.remote_reconcile_status = format!(
+                    "Remote Audio reconciliation finished for `{}`: {} -> {} ({:?}).",
+                    report.project_id,
+                    state_text(report.previous_state),
+                    state_text(report.state),
+                    report.disposition
+                );
+                self.remote_reconcile_status_is_error = false;
+
+                let current_root = self.settings.current().safe.data_root.clone();
+                let selected_matches = self
+                    .selected_project
+                    .as_ref()
+                    .is_some_and(|project| project.metadata.project_id == report.project_id);
+                if current_root == worker.data_root && selected_matches {
+                    self.reload_selected_project();
+                    self.refresh_projects();
+                } else {
+                    self.remote_reconcile_status.push_str(
+                        " Result persisted to its original Data Root; current selection/settings changed, so auto-refresh was skipped.",
+                    );
+                }
+                self.last_remote_reconcile_report = Some(report);
+            }
+            Err(error) => {
+                self.remote_reconcile_status = format!(
+                    "Remote Audio reconciliation failed for `{}` at settings revision {}: {error}",
+                    worker.project_id, worker.revision
+                );
+                self.remote_reconcile_status_is_error = true;
+                self.last_remote_reconcile_report = None;
+            }
+        }
     }
 
     fn start_run(&mut self, action: RunAction) {
@@ -1119,6 +1304,33 @@ fn flow_disposition_text(disposition: FlowRunDisposition) -> &'static str {
         FlowRunDisposition::SkippedByPolicy => "SKIPPED_BY_POLICY",
         FlowRunDisposition::SkippedByAction => "SKIPPED_BY_ACTION",
         FlowRunDisposition::Blocked => "BLOCKED",
+    }
+}
+
+fn render_remote_reconciliation_report(
+    ui: &mut egui::Ui,
+    report: &RemoteAudioReconciliationReport,
+) {
+    ui.strong("Remote Audio reconciliation");
+    ui.label(format!(
+        "{} -> {} | {:?}",
+        state_text(report.previous_state),
+        state_text(report.state),
+        report.disposition
+    ));
+    ui.small(format!("Current server: {}", report.current_server));
+    if let Some(server) = &report.attempt_server {
+        ui.small(format!("Attempt server: {server}"));
+    }
+    if let Some(attempt_id) = &report.attempt_id {
+        ui.small(format!("Attempt: {attempt_id}"));
+    }
+    ui.small(format!(
+        "Remote queried: {} | local artifact verified/synced: {}",
+        report.queried_remote, report.artifact_synced
+    ));
+    if let Some(message) = &report.message {
+        ui.small(message);
     }
 }
 
