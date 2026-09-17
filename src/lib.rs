@@ -56,11 +56,11 @@ pub use project_catalog::{
 };
 pub use providers::{
     AssetKind, CreatorAttribution, GenerateProjectOptions, OmniVoiceArtifact,
-    OmniVoiceArtifactDownload, OmniVoiceArtifactProvider, OmniVoiceArtifactTransport, OmniVoiceClient,
-    OmniVoiceConnection, OmniVoiceError, OmniVoiceImportResult, OmniVoiceJobSubmission,
-    OmniVoiceProvider, OmniVoiceRemoteJob, PexelsProvider, ProviderConnection, RateLimitMetadata,
-    StockAssetCandidate, StockProvider, StockProviderError, StockRendition, StockSearchPage,
-    StockSearchRequest,
+    OmniVoiceArtifactDownload, OmniVoiceArtifactProvider, OmniVoiceArtifactTransport,
+    OmniVoiceClient, OmniVoiceConnection, OmniVoiceError, OmniVoiceImportResult,
+    OmniVoiceJobSubmission, OmniVoiceProvider, OmniVoiceRemoteJob, PexelsProvider,
+    ProviderConnection, RateLimitMetadata, StockAssetCandidate, StockProvider, StockProviderError,
+    StockRendition, StockSearchPage, StockSearchRequest,
 };
 pub use reconciliation::{
     reconcile_local_project, LocalReconciliationError, LocalReconciliationReport,
