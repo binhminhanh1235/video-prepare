@@ -46,10 +46,7 @@ fn strip_outer_markdown_fence(input: &str) -> String {
         return input.to_owned();
     };
 
-    if first < last
-        && lines[first].trim_start().starts_with("```")
-        && lines[last].trim() == "```"
-    {
+    if first < last && lines[first].trim_start().starts_with("```") && lines[last].trim() == "```" {
         let mut stripped = lines[first + 1..last].join("\n");
         if input.ends_with('\n') {
             stripped.push('\n');
