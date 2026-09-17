@@ -2,6 +2,7 @@ pub mod audio;
 pub mod audio_artifacts;
 pub mod connection_tests;
 pub mod desktop;
+pub mod diagnostics;
 pub mod inspection;
 pub mod manual_visual;
 pub mod orchestration;
@@ -29,6 +30,10 @@ pub use connection_tests::{
     ConnectionTestTarget, OmniVoiceConnectionReport, PexelsConnectionReport,
 };
 pub use desktop::{run_desktop, VideoPrepareApp};
+pub use diagnostics::{
+    append_run_log_event, read_run_log, run_log_path, Diagnostic, DiagnosticCategory, RunLogError,
+    RunLogEvent, RUN_LOG_RELATIVE_PATH, RUN_LOG_SCHEMA_VERSION,
+};
 pub use inspection::{
     inspect_project, AudioAttemptInspection, AudioInspection, InspectionProblem, ProjectInspection,
     SceneInspection, VisualRequestInspection,
@@ -51,11 +56,11 @@ pub use project_catalog::{
 };
 pub use providers::{
     AssetKind, CreatorAttribution, GenerateProjectOptions, OmniVoiceArtifact,
-    OmniVoiceArtifactDownload, OmniVoiceArtifactProvider, OmniVoiceArtifactTransport,
-    OmniVoiceClient, OmniVoiceConnection, OmniVoiceError, OmniVoiceImportResult,
-    OmniVoiceJobSubmission, OmniVoiceProvider, OmniVoiceRemoteJob, PexelsProvider,
-    ProviderConnection, RateLimitMetadata, StockAssetCandidate, StockProvider, StockProviderError,
-    StockRendition, StockSearchPage, StockSearchRequest,
+    OmniVoiceArtifactDownload, OmniVoiceArtifactProvider, OmniVoiceArtifactTransport, OmniVoiceClient,
+    OmniVoiceConnection, OmniVoiceError, OmniVoiceImportResult, OmniVoiceJobSubmission,
+    OmniVoiceProvider, OmniVoiceRemoteJob, PexelsProvider, ProviderConnection, RateLimitMetadata,
+    StockAssetCandidate, StockProvider, StockProviderError, StockRendition, StockSearchPage,
+    StockSearchRequest,
 };
 pub use reconciliation::{
     reconcile_local_project, LocalReconciliationError, LocalReconciliationReport,
