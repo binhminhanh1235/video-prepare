@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
@@ -100,6 +100,8 @@ pub struct VideoPrepareApp {
     last_manual_visual_import: Option<ManualVisualImportSummary>,
     manual_visual_status: String,
     manual_visual_status_is_error: bool,
+    asset_action_status: String,
+    asset_action_status_is_error: bool,
 }
 
 impl Default for VideoPrepareApp {
@@ -165,6 +167,8 @@ impl Default for VideoPrepareApp {
             last_manual_visual_import: None,
             manual_visual_status: String::new(),
             manual_visual_status_is_error: false,
+            asset_action_status: String::new(),
+            asset_action_status_is_error: false,
         };
         app.refresh_projects();
         app
@@ -898,6 +902,22 @@ impl VideoPrepareApp {
 
       ui.add_space(16.0);
       ui.heading(egui::RichText::new("Visual requests").size(20.0));
+      ui.label(
+          egui::RichText::new(
+              "Downloaded and manually imported assets show their full local path here. Preview opens the file with the system default app; Go to folder reveals it in the file manager.",
+          )
+          .weak(),
+      );
+      if !self.asset_action_status.is_empty() {
+          if self.asset_action_status_is_error {
+              ui.colored_label(
+                  ui.visuals().error_fg_color,
+                  &self.asset_action_status,
+              );
+          } else {
+              ui.label(&self.asset_action_status);
+          }
+      }
       ui.add_space(6.0);
       if !scene.visual_detail_available {
           egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -950,6 +970,72 @@ impl VideoPrepareApp {
                   }
                   if let Some(error) = &request.last_error {
                       ui.colored_label(ui.visuals().error_fg_color, error);
+                  }
+                  if !request.assets.is_empty() {
+                      ui.add_space(8.0);
+                      ui.label(egui::RichText::new("Local assets").strong());
+                      for asset in &request.assets {
+                          egui::Frame::group(ui.style()).show(ui, |ui| {
+                              ui.set_min_width(ui.available_width());
+                              ui.horizontal_wrapped(|ui| {
+                                  ui.strong(format!(
+                                      "Slot {} · {:?}",
+                                      asset.slot, asset.kind
+                                  ));
+                                  ui.label(
+                                      egui::RichText::new(format!(
+                                          "{} · {} bytes · provider asset {}",
+                                          asset.provider, asset.bytes, asset.provider_asset_id
+                                      ))
+                                      .weak(),
+                                  );
+                              });
+                              ui.small(format!("Relative path: {}", asset.relative_path));
+                              ui.label(egui::RichText::new("Full path").strong());
+                              ui.add(
+                                  egui::Label::new(
+                                      egui::RichText::new(
+                                          asset.absolute_path.display().to_string(),
+                                      )
+                                      .monospace(),
+                                  )
+                                  .wrap(),
+                              );
+                              ui.horizontal_wrapped(|ui| {
+                                  if ui.button("Preview").clicked() {
+                                      match open_asset_preview(&asset.absolute_path) {
+                                          Ok(()) => {
+                                              self.asset_action_status = format!(
+                                                  "Opened preview: {}",
+                                                  asset.absolute_path.display()
+                                              );
+                                              self.asset_action_status_is_error = false;
+                                          }
+                                          Err(error) => {
+                                              self.asset_action_status = error;
+                                              self.asset_action_status_is_error = true;
+                                          }
+                                      }
+                                  }
+                                  if ui.button("Go to folder").clicked() {
+                                      match reveal_asset_in_folder(&asset.absolute_path) {
+                                          Ok(()) => {
+                                              self.asset_action_status = format!(
+                                                  "Revealed asset: {}",
+                                                  asset.absolute_path.display()
+                                              );
+                                              self.asset_action_status_is_error = false;
+                                          }
+                                          Err(error) => {
+                                              self.asset_action_status = error;
+                                              self.asset_action_status_is_error = true;
+                                          }
+                                      }
+                                  }
+                              });
+                          });
+                          ui.add_space(6.0);
+                      }
                   }
                   if request.completed_assets < target {
                       ui.add_space(6.0);
@@ -1451,6 +1537,8 @@ impl VideoPrepareApp {
         self.last_remote_reconcile_report = None;
         self.remote_reconcile_status.clear();
         self.remote_reconcile_status_is_error = false;
+        self.asset_action_status.clear();
+        self.asset_action_status_is_error = false;
         self.selected_project = Some(project);
     }
 
@@ -1995,6 +2083,84 @@ impl VideoPrepareApp {
             }
         }
     }
+}
+
+fn open_asset_preview(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("Asset file does not exist: {}", path.display()));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("failed to open asset preview: {error}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return Command::new("cmd.exe")
+            .args(["/C", "start", ""])
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("failed to open asset preview: {error}"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("failed to open asset preview: {error}"));
+    }
+
+    #[allow(unreachable_code)]
+    Err("asset preview is not supported on this platform".to_owned())
+}
+
+fn reveal_asset_in_folder(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("Asset file does not exist: {}", path.display()));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("failed to reveal asset in Finder: {error}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return Command::new("explorer.exe")
+            .arg("/select,")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("failed to reveal asset in Explorer: {error}"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("asset has no parent folder: {}", path.display()))?;
+        return Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("failed to open asset folder: {error}"));
+    }
+
+    #[allow(unreachable_code)]
+    Err("revealing an asset is not supported on this platform".to_owned())
 }
 
 fn pick_data_root_folder(current: &str) -> Result<Option<PathBuf>, String> {
