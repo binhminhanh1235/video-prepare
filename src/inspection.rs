@@ -1,5 +1,8 @@
 use crate::{load_audio_status, load_visual_status, AudioFlowStatus, StoredProject, TaskState};
 
+#[cfg(test)]
+use crate::VisualFlowStatus;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionProblem {
     pub area: String,
