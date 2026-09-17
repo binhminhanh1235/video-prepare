@@ -104,15 +104,36 @@ pub struct VideoPrepareApp {
 
 impl Default for VideoPrepareApp {
     fn default() -> Self {
-        let settings = RuntimeSettingsStore::default();
+        let (settings, load_warning) = RuntimeSettingsStore::load_persistent_or_default();
         let draft = settings.draft();
         let catalog_data_root = settings.current().safe.data_root.clone();
+        let (status, status_is_error) = match load_warning {
+            Some(error) => (
+                format!(
+                    "Could not load saved preferences: {error}. Defaults are active; Apply settings will try to repair the saved file."
+                ),
+                true,
+            ),
+            None => match settings.persistence_path() {
+                Some(path) => (
+                    format!(
+                        "Settings persistence is enabled at {}. API keys and tokens remain session-only.",
+                        path.display()
+                    ),
+                    false,
+                ),
+                None => (
+                    "Settings persistence is unavailable in this environment.".to_owned(),
+                    true,
+                ),
+            },
+        };
         let mut app = Self {
             settings,
             draft,
             screen: Screen::Projects,
-            status: "Runtime settings are memory-only until applied.".to_owned(),
-            status_is_error: false,
+            status,
+            status_is_error,
             catalog: ProjectCatalog::default(),
             catalog_data_root,
             selected_project: None,
@@ -1034,6 +1055,10 @@ impl VideoPrepareApp {
               .weak(),
           );
       });
+      if let Some(path) = self.settings.persistence_path() {
+          ui.small(format!("Saved preferences: {}", path.display()));
+      }
+      ui.small("Data Root, flow toggles, provider URL, voice options, quality, and concurrency are restored on next launch. API keys and tokens are intentionally session-only.");
 
       let connection_busy = self.connection_worker.is_some();
 
@@ -1112,7 +1137,7 @@ impl VideoPrepareApp {
                   ui.spinner();
               }
           });
-          ui.small("Connection tests use a captured copy of the draft. Secrets stay memory-only.");
+          ui.small("Connection tests use a captured copy of the draft. The API key is session-only and is never written to the preferences file.");
       });
 
       ui.add_space(12.0);
@@ -1245,10 +1270,17 @@ impl VideoPrepareApp {
                   match self.settings.apply(&self.draft) {
                       Ok(snapshot) => {
                           self.draft = RuntimeSettingsDraft::from_snapshot(&snapshot);
-                          self.status = format!(
-                              "Applied runtime settings revision {}.",
-                              snapshot.revision
-                          );
+                          self.status = match self.settings.persistence_path() {
+                              Some(path) => format!(
+                                  "Applied runtime settings revision {} and saved preferences to {}. API keys and tokens remain session-only.",
+                                  snapshot.revision,
+                                  path.display()
+                              ),
+                              None => format!(
+                                  "Applied runtime settings revision {}. Persistent storage is unavailable.",
+                                  snapshot.revision
+                              ),
+                          };
                           self.status_is_error = false;
                           refresh_catalog = previous_root != snapshot.safe.data_root;
                       }
@@ -1260,7 +1292,7 @@ impl VideoPrepareApp {
               }
               ui.label(
                   egui::RichText::new(
-                      "Applying updates the in-memory runtime snapshot used by new work.",
+                      "Applying updates the runtime snapshot and saves non-secret preferences for the next launch.",
                   )
                   .weak(),
               );

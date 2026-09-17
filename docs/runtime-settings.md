@@ -220,9 +220,7 @@ Khong capture API token/key.
 
 ## 8. Persistence cua settings
 
-MVP co the tach hai nhom:
-
-Safe preferences co the remember:
+Safe preferences duoc persist tu dong khi user bam `Apply settings` va duoc load lai khi Video Prepare khoi dong lan sau:
 
 ```text
 Data Root
@@ -236,22 +234,25 @@ read section titles
 download concurrency
 ```
 
-Secrets mac dinh memory-only:
+Preferences file nam trong application config directory cua OS:
+
+```text
+macOS   ~/Library/Application Support/video-prepare/preferences.json
+Windows %APPDATA%/video-prepare/preferences.json
+Linux   $XDG_CONFIG_HOME/video-prepare/preferences.json
+        hoac ~/.config/video-prepare/preferences.json
+```
+
+Co the override config directory bang `VIDEO_PREPARE_CONFIG_DIR`, huu ich cho test hoac portable deployment.
+
+Secrets van memory-only va KHONG ghi vao preferences file:
 
 ```text
 Pexels API Key
 OmniVoice API Token
 ```
 
-Future:
-
-```text
-Remember securely
-```
-
-va dung OS credential store.
-
-Khong tu y luu plaintext secret vao app config.
+Neu can remember secret trong future, dung OS credential store thay vi plaintext app config.
 
 ## 9. UI sketch
 

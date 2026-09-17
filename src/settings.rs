@@ -219,7 +219,9 @@ impl RuntimeSettingsStore {
                 })?;
                 validate_loaded_safe_preferences(parsed)?
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => SafePreferences::default(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                SafePreferences::default()
+            }
             Err(error) => {
                 return Err(SettingsError::PersistenceRead {
                     path,
@@ -364,7 +366,10 @@ pub fn default_preferences_path() -> Result<PathBuf, SettingsError> {
     }
 
     env::current_dir()
-        .map(|path| path.join(format!(".{SETTINGS_DIR_NAME}")).join(SETTINGS_FILE_NAME))
+        .map(|path| {
+            path.join(format!(".{SETTINGS_DIR_NAME}"))
+                .join(SETTINGS_FILE_NAME)
+        })
         .map_err(|error| SettingsError::PersistenceLocation(error.to_string()))
 }
 
