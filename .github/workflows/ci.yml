@@ -8,7 +8,7 @@ on:
       - 'feat/**'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
@@ -21,6 +21,20 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+
+      - name: Apply one-shot P5.03 GUI patch
+        if: github.event_name == 'push' && github.ref_name == 'feat/p5-manual-visual-takeover'
+        shell: bash
+        run: |
+          python .github/scripts/patch_p5_manual_visual_gui.py
+          cargo fmt --all
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add src/desktop.rs
+            git commit -m "feat: wire manual visual takeover into Scene detail"
+            git push
+          fi
 
       - name: Check formatting
         run: cargo fmt --all -- --check
