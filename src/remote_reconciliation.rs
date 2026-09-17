@@ -231,7 +231,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        audio::{save_audio_status, AudioAttemptStatus, AudioFlowStatus, AUDIO_STATUS_SCHEMA_VERSION},
+        audio::{
+            save_audio_status, AudioAttemptStatus, AudioFlowStatus, AUDIO_STATUS_SCHEMA_VERSION,
+        },
         parse_script, GenerateProjectOptions, OmniVoiceArtifact, OmniVoiceArtifactDownload,
         OmniVoiceArtifactTransport, OmniVoiceConnection, OmniVoiceError, OmniVoiceImportResult,
         OmniVoiceJobSubmission, OmniVoiceRemoteJob, ProjectStore,
