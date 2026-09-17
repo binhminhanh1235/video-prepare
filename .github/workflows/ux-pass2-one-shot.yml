@@ -18,7 +18,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply UX pass 2 patch
-        run: python3 .github/scripts/ux_pass2.py
+        run: |
+          python3 .github/scripts/ux_pass2.py
+          python3 .github/scripts/ux_pass2_fix.py
 
       - name: Format
         run: cargo fmt --all --check || (cargo fmt --all && cargo fmt --all --check)
@@ -32,7 +34,7 @@ jobs:
       - name: Commit implementation and remove one-shot files
         shell: bash
         run: |
-          rm -f .github/workflows/ux-pass2-one-shot.yml .github/scripts/ux_pass2.py
+          rm -f .github/workflows/ux-pass2-one-shot.yml .github/scripts/ux_pass2.py .github/scripts/ux_pass2_fix.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
