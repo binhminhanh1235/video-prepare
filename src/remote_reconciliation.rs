@@ -143,6 +143,27 @@ where
             ))
         }
         Err(AudioArtifactError::Provider(error)) => {
+            let refreshed = load_audio_status(&project.root, &project.metadata.project_id)
+                .map_err(|load_error| {
+                    RemoteAudioReconciliationError::Audio(load_error.to_string())
+                })?;
+            if refreshed.state == TaskState::Partial {
+                return Ok(report(
+                    project,
+                    Some(latest.attempt_id),
+                    Some(latest.server_base_url),
+                    current_server,
+                    previous_state,
+                    TaskState::Partial,
+                    RemoteAudioDisposition::Reconciled,
+                    true,
+                    false,
+                    Some(format!(
+                        "remote completion is known, but local artifact synchronization is incomplete: {error}"
+                    )),
+                ));
+            }
+
             let message = format!("remote state could not be proven: {error}");
             mark_unknown(project, status, latest_index, &message)?;
             Ok(report(
@@ -523,6 +544,34 @@ mod tests {
         assert_eq!(report.state, TaskState::Failed);
         let stored = load_audio_status(&project.root, &project.metadata.project_id).unwrap();
         assert_eq!(stored.state, TaskState::Failed);
+    }
+
+    #[test]
+    fn completed_remote_job_without_artifact_transport_stays_partial() {
+        let (_temp, mut project) = create_demo();
+        persist_attempt(
+            &mut project,
+            "https://voice.example",
+            TaskState::Running,
+            TaskState::Running,
+            Some("job-1"),
+        );
+        let provider = MockOmniVoice::new(
+            "https://voice.example",
+            Ok(OmniVoiceRemoteJob {
+                job_id: "job-1".to_owned(),
+                status: "completed".to_owned(),
+                kind: None,
+            }),
+        );
+
+        let report = reconcile_remote_audio(&provider, &mut project).unwrap();
+        assert_eq!(provider.calls(), 1);
+        assert_eq!(report.state, TaskState::Partial);
+        assert_eq!(report.disposition, RemoteAudioDisposition::Reconciled);
+        let stored = load_audio_status(&project.root, &project.metadata.project_id).unwrap();
+        assert_eq!(stored.state, TaskState::Partial);
+        assert_eq!(stored.attempts[0].state, TaskState::Completed);
     }
 
     #[test]
