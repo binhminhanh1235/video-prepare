@@ -87,7 +87,10 @@ fn fully_verified_visual_completion_survives_reconciliation() {
     let stored: VisualFlowStatus =
         serde_json::from_slice(&fs::read(visual_status_path(&project.root)).unwrap()).unwrap();
     assert_eq!(stored.state, TaskState::Completed);
-    assert!(stored.scenes.iter().all(|scene| scene.state == TaskState::Completed));
+    assert!(stored
+        .scenes
+        .iter()
+        .all(|scene| scene.state == TaskState::Completed));
 }
 
 #[test]
