@@ -38,7 +38,6 @@ struct RunWorker {
 struct FlowRetryWorker {
     receiver: Receiver<Result<FlowRetryReport, String>>,
     project_id: String,
-    data_root: PathBuf,
     revision: u64,
     target: FlowTarget,
 }
@@ -1842,7 +1841,6 @@ impl VideoPrepareApp {
         };
 
         let snapshot = self.settings.current();
-        let data_root = snapshot.safe.data_root.clone();
         let revision = snapshot.revision;
         let worker_project_id = project_id.clone();
         let (sender, receiver) = mpsc::channel();
@@ -1855,7 +1853,6 @@ impl VideoPrepareApp {
         self.flow_retry_worker = Some(FlowRetryWorker {
             receiver,
             project_id: project_id.clone(),
-            data_root,
             revision,
             target,
         });
@@ -2185,13 +2182,6 @@ fn status_badge(ui: &mut egui::Ui, label: &str, state: crate::TaskState) {
             .monospace()
             .color(color),
     );
-}
-
-fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.text_edit_singleline(value);
-    });
 }
 
 fn state_text(state: crate::TaskState) -> &'static str {
