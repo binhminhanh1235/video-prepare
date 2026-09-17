@@ -1,0 +1,101 @@
+name: One-shot desktop warning cleanup
+
+on:
+  push:
+    branches:
+      - fix/desktop-release-warnings
+    paths:
+      - '.github/workflows/fix-desktop-release-warnings.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout warning-fix branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/desktop-release-warnings
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Remove dead desktop code
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/desktop.rs')
+          text = path.read_text()
+
+          old_struct = '''struct FlowRetryWorker {
+              receiver: Receiver<Result<FlowRetryReport, String>>,
+              project_id: String,
+              data_root: PathBuf,
+              revision: u64,
+              target: FlowTarget,
+          }
+          '''
+          new_struct = '''struct FlowRetryWorker {
+              receiver: Receiver<Result<FlowRetryReport, String>>,
+              project_id: String,
+              revision: u64,
+              target: FlowTarget,
+          }
+          '''
+          if text.count(old_struct) != 1:
+              raise SystemExit('expected exactly one FlowRetryWorker struct shape')
+          text = text.replace(old_struct, new_struct, 1)
+
+          start = text.index('    fn start_flow_retry(&mut self, target: FlowTarget) {')
+          end = text.index('    fn poll_flow_retry_worker(&mut self, ctx: &egui::Context) {', start)
+          segment = text[start:end]
+          if segment.count('        let data_root = snapshot.safe.data_root.clone();\n') != 1:
+              raise SystemExit('expected exactly one retry data_root capture')
+          if segment.count('            data_root,\n') != 1:
+              raise SystemExit('expected exactly one retry data_root initializer')
+          segment = segment.replace('        let data_root = snapshot.safe.data_root.clone();\n', '', 1)
+          segment = segment.replace('            data_root,\n', '', 1)
+          text = text[:start] + segment + text[end:]
+
+          old_helper = '''fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
+              ui.horizontal(|ui| {
+                  ui.label(label);
+                  ui.text_edit_singleline(value);
+              });
+          }
+
+          '''
+          if text.count(old_helper) != 1:
+              raise SystemExit('expected exactly one unused field helper')
+          text = text.replace(old_helper, '', 1)
+
+          path.write_text(text)
+          PY
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Check all targets
+        run: cargo check --locked --all-targets --all-features
+
+      - name: Verify release build
+        run: cargo build --locked --release
+
+      - name: Commit source cleanup
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/desktop.rs
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit.'
+            exit 1
+          fi
+          git commit -m 'fix: remove desktop release warnings'
+          git push origin HEAD:fix/desktop-release-warnings
