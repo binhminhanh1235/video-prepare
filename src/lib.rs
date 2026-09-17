@@ -12,6 +12,7 @@ pub mod providers;
 pub mod reconciliation;
 pub mod remote_reconciliation;
 pub mod script;
+pub mod script_input;
 pub mod settings;
 pub mod visual;
 
@@ -71,9 +72,10 @@ pub use remote_reconciliation::{
     RemoteAudioReconciliationReport,
 };
 pub use script::{
-    parse_script, MediaKind, OmniVoiceScript, OmniVoiceSection, PreparedScript, SceneSpec,
-    ScriptError, VisualRequest,
+    MediaKind, OmniVoiceScript, OmniVoiceSection, PreparedScript, SceneSpec, ScriptError,
+    VisualRequest,
 };
+pub use script_input::{format_script, parse_script};
 pub use settings::{
     normalize_omnivoice_url, QualityPreset, RuntimeSecrets, RuntimeSettingsDraft,
     RuntimeSettingsSnapshot, RuntimeSettingsStore, SafePreferences, SettingsError,
