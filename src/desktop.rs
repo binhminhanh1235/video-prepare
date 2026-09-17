@@ -608,7 +608,7 @@ impl VideoPrepareApp {
                     if let Some(error) = &request.last_error {
                         ui.colored_label(ui.visuals().error_fg_color, error);
                     }
-                    if request.completed_assets < request.target_count {
+                    if request.completed_assets < request.target_count as usize {
                         let source_ready = !self.manual_visual_path.trim().is_empty();
                         if ui
                             .add_enabled(
