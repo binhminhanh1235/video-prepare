@@ -1,0 +1,134 @@
+name: Apply project ID normalization
+
+on:
+  push:
+    branches: [feat/normalize-project-id-spaces]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Normalize Project ID whitespace in the UI
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('src/desktop.rs')
+          text = path.read_text()
+
+          old = '''                    ui.label(egui::RichText::new("Project ID").strong());
+                    ui.add_sized(
+                        [420.0, 34.0],
+                        egui::TextEdit::singleline(&mut self.create_project_id)
+                            .hint_text("e.g. hashmap-deep-dive"),
+                    );
+'''
+          new = '''                    ui.label(egui::RichText::new("Project ID").strong());
+                    let project_id_response = ui.add_sized(
+                        [420.0, 34.0],
+                        egui::TextEdit::singleline(&mut self.create_project_id)
+                            .hint_text("e.g. hashmap-deep-dive"),
+                    );
+                    if project_id_response.changed() {
+                        self.create_project_id =
+                            normalize_project_id_input(&self.create_project_id);
+                    }
+                    ui.small("Spaces are converted to hyphens automatically.");
+'''
+          if old not in text:
+              raise SystemExit('Project ID input anchor not found')
+          text = text.replace(old, new, 1)
+
+          anchor = '''fn selected_folder_from_stdout(stdout: &[u8]) -> Result<Option<PathBuf>, String> {
+    let selected = String::from_utf8(stdout.to_vec())
+        .map_err(|error| format!("folder browser returned invalid UTF-8: {error}"))?;
+    let selected = selected.trim();
+    if selected.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(PathBuf::from(selected)))
+    }
+}
+
+'''
+          helper = '''fn selected_folder_from_stdout(stdout: &[u8]) -> Result<Option<PathBuf>, String> {
+    let selected = String::from_utf8(stdout.to_vec())
+        .map_err(|error| format!("folder browser returned invalid UTF-8: {error}"))?;
+    let selected = selected.trim();
+    if selected.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(PathBuf::from(selected)))
+    }
+}
+
+fn normalize_project_id_input(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut separator_pending = false;
+
+    for character in value.chars() {
+        if character.is_whitespace() {
+            separator_pending = !normalized.is_empty();
+            continue;
+        }
+
+        if separator_pending && character != '-' && !normalized.ends_with('-') {
+            normalized.push('-');
+        }
+        separator_pending = false;
+        normalized.push(character);
+    }
+
+    normalized
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::normalize_project_id_input;
+
+    #[test]
+    fn project_id_whitespace_is_normalized_to_hyphens() {
+        assert_eq!(
+            normalize_project_id_input("HashMap Deep Dive"),
+            "HashMap-Deep-Dive"
+        );
+        assert_eq!(
+            normalize_project_id_input("  HashMap   Deep\\tDive  "),
+            "HashMap-Deep-Dive"
+        );
+        assert_eq!(
+            normalize_project_id_input("HashMap - Deep Dive"),
+            "HashMap-Deep-Dive"
+        );
+    }
+}
+
+'''
+          if anchor not in text:
+              raise SystemExit('helper insertion anchor not found')
+          text = text.replace(anchor, helper, 1)
+          path.write_text(text)
+          PY
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Test
+        run: cargo test --locked --all-targets --all-features
+      - name: Commit implementation
+        shell: bash
+        run: |
+          rm .github/workflows/apply-project-id-normalization.yml
+          cargo fmt --all
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/desktop.rs .github/workflows/apply-project-id-normalization.yml
+          git commit -m "feat: normalize project ID whitespace"
+          git push origin HEAD:feat/normalize-project-id-spaces
