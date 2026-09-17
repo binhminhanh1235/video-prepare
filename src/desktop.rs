@@ -274,11 +274,15 @@ impl VideoPrepareApp {
                     ui.add_space(10.0);
 
                     ui.label(egui::RichText::new("Project ID").strong());
-                    ui.add_sized(
+                    let project_id_response = ui.add_sized(
                         [420.0, 34.0],
                         egui::TextEdit::singleline(&mut self.create_project_id)
                             .hint_text("e.g. hashmap-deep-dive"),
                     );
+                    if project_id_response.changed() {
+                        self.create_project_id = normalize_project_id_input(&self.create_project_id);
+                    }
+                    ui.small("Spaces are converted to hyphens automatically.");
 
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
@@ -2337,6 +2341,47 @@ fn selected_folder_from_stdout(stdout: &[u8]) -> Result<Option<PathBuf>, String>
         Ok(None)
     } else {
         Ok(Some(PathBuf::from(selected)))
+    }
+}
+
+fn normalize_project_id_input(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut separator_pending = false;
+
+    for character in value.chars() {
+        if character.is_whitespace() {
+            separator_pending = !normalized.is_empty();
+            continue;
+        }
+
+        if separator_pending && character != '-' && !normalized.ends_with('-') {
+            normalized.push('-');
+        }
+        separator_pending = false;
+        normalized.push(character);
+    }
+
+    normalized
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::normalize_project_id_input;
+
+    #[test]
+    fn project_id_whitespace_is_normalized_to_hyphens() {
+        assert_eq!(
+            normalize_project_id_input("HashMap Deep Dive"),
+            "HashMap-Deep-Dive"
+        );
+        assert_eq!(
+            normalize_project_id_input("  HashMap   Deep\tDive  "),
+            "HashMap-Deep-Dive"
+        );
+        assert_eq!(
+            normalize_project_id_input("HashMap - Deep Dive"),
+            "HashMap-Deep-Dive"
+        );
     }
 }
 
