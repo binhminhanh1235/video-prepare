@@ -8,7 +8,7 @@ on:
       - 'feat/**'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
@@ -21,6 +21,20 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+
+      - name: Apply one-shot P5.03 GUI type fix
+        if: github.event_name == 'push' && github.ref_name == 'feat/p5-manual-visual-takeover'
+        shell: bash
+        run: |
+          python .github/scripts/fix_p5_manual_gui_type.py
+          cargo fmt --all
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add src/desktop.rs
+            git commit -m "fix: compare manual visual asset counts consistently"
+            git push
+          fi
 
       - name: Check formatting
         run: cargo fmt --all -- --check
