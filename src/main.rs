@@ -1,8 +1,6 @@
 use std::{env, fs, process};
 
-use video_prepare::{
-    import_manual_visual_asset, parse_script, run_desktop, ProjectStore,
-};
+use video_prepare::{import_manual_visual_asset, parse_script, run_desktop, ProjectStore};
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -160,6 +158,8 @@ fn usage() -> ! {
     eprintln!("  video-prepare validate <script.vprep>");
     eprintln!("  video-prepare create-project <data-root> <project-id> <script.vprep>");
     eprintln!("  video-prepare open-project <project-root>");
-    eprintln!("  video-prepare import-visual <project-root> <scene-id> <visual-id> <image-or-video-file>");
+    eprintln!(
+        "  video-prepare import-visual <project-root> <scene-id> <visual-id> <image-or-video-file>"
+    );
     process::exit(2);
 }
