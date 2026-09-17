@@ -8,13 +8,14 @@ use std::{
 use eframe::egui;
 
 use crate::{
-    create_project_from_script_path, discover_projects, execute_flow_retry, execute_project_run,
-    import_manual_visual_asset, inspect_project, load_audio_status, open_project_from_data_root,
-    reconcile_remote_audio, test_omnivoice_connection, test_pexels_connection,
-    ConnectionTestReport, ConnectionTestTarget, FlowRetryReport, FlowRunDisposition, FlowRunReport,
-    FlowTarget, ManualVisualImportSummary, OmniVoiceClient, ProjectCatalog, ProjectInspection,
-    ProjectRunReport, QualityPreset, RemoteAudioReconciliationReport, RunAction,
-    RuntimeSettingsDraft, RuntimeSettingsStore, StoredProject,
+    create_project_from_script_path, create_project_from_script_text, discover_projects,
+    execute_flow_retry, execute_project_run, import_manual_visual_asset, inspect_project,
+    load_audio_status, open_project_from_data_root, reconcile_remote_audio,
+    test_omnivoice_connection, test_pexels_connection, ConnectionTestReport, ConnectionTestTarget,
+    FlowRetryReport, FlowRunDisposition, FlowRunReport, FlowTarget, ManualVisualImportSummary,
+    OmniVoiceClient, ProjectCatalog, ProjectInspection, ProjectRunReport, QualityPreset,
+    RemoteAudioReconciliationReport, RunAction, RuntimeSettingsDraft, RuntimeSettingsStore,
+    StoredProject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +75,7 @@ pub struct VideoPrepareApp {
     inspection: Option<ProjectInspection>,
     selected_scene_id: Option<String>,
     create_project_id: String,
+    create_script_text: String,
     create_script_path: String,
     project_status: String,
     project_status_is_error: bool,
@@ -117,6 +119,7 @@ impl Default for VideoPrepareApp {
             inspection: None,
             selected_scene_id: None,
             create_project_id: String::new(),
+            create_script_text: String::new(),
             create_script_path: String::new(),
             project_status: String::new(),
             project_status_is_error: false,
@@ -156,21 +159,28 @@ impl eframe::App for VideoPrepareApp {
         self.poll_manual_visual_worker(ctx);
 
         egui::TopBottomPanel::top("top-nav").show(ctx, |ui| {
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.heading("Video Prepare");
+                ui.heading(egui::RichText::new("Video Prepare").size(22.0));
+                ui.add_space(10.0);
                 ui.separator();
+                ui.add_space(4.0);
                 nav_button(ui, &mut self.screen, Screen::Projects, "Projects");
                 nav_button(ui, &mut self.screen, Screen::Dashboard, "Dashboard");
                 nav_button(ui, &mut self.screen, Screen::Scene, "Scene");
                 nav_button(ui, &mut self.screen, Screen::Settings, "Settings");
             });
+            ui.add_space(6.0);
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.screen {
-            Screen::Projects => self.projects_ui(ui),
-            Screen::Dashboard => self.dashboard_ui(ui),
-            Screen::Scene => self.scene_detail_ui(ui),
-            Screen::Settings => self.settings_ui(ui),
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.add_space(8.0);
+            match self.screen {
+                Screen::Projects => self.projects_ui(ui),
+                Screen::Dashboard => self.dashboard_ui(ui),
+                Screen::Scene => self.scene_detail_ui(ui),
+                Screen::Settings => self.settings_ui(ui),
+            }
         });
 
         if self.run_worker.is_some()
@@ -186,70 +196,205 @@ impl eframe::App for VideoPrepareApp {
 
 impl VideoPrepareApp {
     fn projects_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Projects");
-        ui.horizontal(|ui| {
-            ui.label(format!("Data Root: {}", self.catalog_data_root.display()));
-            if ui.button("Refresh").clicked() {
-                self.refresh_projects();
-            }
-        });
-        ui.add_space(8.0);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_max_width(980.0);
+                ui.heading("Projects");
+                ui.label(
+                    egui::RichText::new(
+                        "Start from a pasted script, then prepare visual and audio assets from one workspace.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(10.0);
 
-        ui.group(|ui| {
-            ui.strong("Create from script");
-            field(ui, "Project ID", &mut self.create_project_id);
-            field(ui, "Script .vprep", &mut self.create_script_path);
-            if ui.button("Create Project").clicked() {
-                self.create_project_from_script();
-            }
-        });
-
-        if !self.project_status.is_empty() {
-            ui.add_space(6.0);
-            if self.project_status_is_error {
-                ui.colored_label(ui.visuals().error_fg_color, &self.project_status);
-            } else {
-                ui.label(&self.project_status);
-            }
-        }
-
-        ui.add_space(10.0);
-        if self.catalog.projects.is_empty() {
-            ui.label("No valid projects found in this Data Root.");
-        } else {
-            ui.strong(format!("Projects ({})", self.catalog.projects.len()));
-            let projects = self.catalog.projects.clone();
-            for project in projects {
-                ui.group(|ui| {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.strong(&project.title);
-                            ui.label(format!("id: {}", project.project_id));
-                            ui.label(format!(
-                                "overall: {:?} | visual: {:?} | audio: {:?}",
-                                project.overall, project.visual_flow, project.audio_flow
-                            ));
-                            ui.small(format!("scenes: {}", project.scene_count));
+                        ui.strong("Data Root");
+                        ui.monospace(self.catalog_data_root.display().to_string());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Refresh projects").clicked() {
+                                self.refresh_projects();
+                            }
                         });
-                        if ui.button("Open").clicked() {
-                            self.open_project(&project.project_id);
-                        }
                     });
                 });
-                ui.add_space(4.0);
-            }
-        }
 
-        if !self.catalog.errors.is_empty() {
-            ui.add_space(10.0);
-            ui.strong("Incomplete / unreadable project folders");
-            for error in self.catalog.errors.clone() {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    format!("{}: {}", error.root.display(), error.message),
-                );
-            }
-        }
+                ui.add_space(12.0);
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.heading(egui::RichText::new("Create a project").size(20.0));
+                    ui.label(
+                        egui::RichText::new(
+                            "Paste is the preferred input. File import stays available as a fallback.",
+                        )
+                        .weak(),
+                    );
+                    ui.add_space(10.0);
+
+                    ui.label(egui::RichText::new("Project ID").strong());
+                    ui.add_sized(
+                        [420.0, 34.0],
+                        egui::TextEdit::singleline(&mut self.create_project_id)
+                            .hint_text("e.g. hashmap-deep-dive"),
+                    );
+
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Paste script").strong());
+                        ui.label(
+                            egui::RichText::new("Preferred")
+                                .color(egui::Color32::from_rgb(96, 165, 250))
+                                .small(),
+                        );
+                    });
+                    ui.label(
+                        egui::RichText::new(
+                            "Paste the complete .vprep content here. If both inputs are filled, this text wins.",
+                        )
+                        .weak(),
+                    );
+                    ui.add_sized(
+                        [ui.available_width(), 240.0],
+                        egui::TextEdit::multiline(&mut self.create_script_text)
+                            .code_editor()
+                            .desired_rows(12)
+                            .hint_text("Paste your structured .vprep script here..."),
+                    );
+
+                    ui.add_space(8.0);
+                    ui.collapsing("Import a .vprep file instead", |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "Optional fallback for scripts already saved on disk.",
+                            )
+                            .weak(),
+                        );
+                        ui.add_sized(
+                            [ui.available_width(), 34.0],
+                            egui::TextEdit::singleline(&mut self.create_script_path)
+                                .hint_text("/path/to/script.vprep"),
+                        );
+                    });
+
+                    let pasted_ready = !self.create_script_text.trim().is_empty();
+                    let file_ready = !self.create_script_path.trim().is_empty();
+                    let id_ready = !self.create_project_id.trim().is_empty();
+                    if pasted_ready && file_ready {
+                        ui.label(
+                            egui::RichText::new(
+                                "Pasted script is ready. The file path will be ignored for this create action.",
+                            )
+                            .color(egui::Color32::from_rgb(96, 165, 250)),
+                        );
+                    }
+
+                    ui.add_space(10.0);
+                    if ui
+                        .add_enabled(
+                            id_ready && (pasted_ready || file_ready),
+                            egui::Button::new(egui::RichText::new("Create project").strong()),
+                        )
+                        .clicked()
+                    {
+                        self.create_project_from_script();
+                    }
+                });
+
+                if !self.project_status.is_empty() {
+                    ui.add_space(10.0);
+                    if self.project_status_is_error {
+                        ui.colored_label(ui.visuals().error_fg_color, &self.project_status);
+                    } else {
+                        ui.label(
+                            egui::RichText::new(&self.project_status)
+                                .color(egui::Color32::from_rgb(134, 239, 172)),
+                        );
+                    }
+                }
+
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    ui.heading(egui::RichText::new("Your projects").size(20.0));
+                    ui.label(
+                        egui::RichText::new(format!("{} total", self.catalog.projects.len())).weak(),
+                    );
+                });
+                ui.add_space(6.0);
+
+                if self.catalog.projects.is_empty() {
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.label(egui::RichText::new("No projects yet").strong());
+                        ui.label(
+                            egui::RichText::new(
+                                "Paste a script above to create the first project in this Data Root.",
+                            )
+                            .weak(),
+                        );
+                    });
+                } else {
+                    let projects = self.catalog.projects.clone();
+                    for project in projects {
+                        let project_id = project.project_id.clone();
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(&project.title).strong().size(17.0),
+                                    );
+                                    ui.monospace(format!("id: {}", project.project_id));
+                                    ui.horizontal_wrapped(|ui| {
+                                        status_badge(ui, "Overall", project.overall);
+                                        status_badge(ui, "Visual", project.visual_flow);
+                                        status_badge(ui, "Audio", project.audio_flow);
+                                    });
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} scene{}",
+                                            project.scene_count,
+                                            if project.scene_count == 1 { "" } else { "s" }
+                                        ))
+                                        .weak(),
+                                    );
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.button("Open project").clicked() {
+                                            self.open_project(&project_id);
+                                        }
+                                    },
+                                );
+                            });
+                        });
+                        ui.add_space(6.0);
+                    }
+                }
+
+                if !self.catalog.errors.is_empty() {
+                    ui.add_space(14.0);
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.strong("Needs attention");
+                        ui.label(
+                            egui::RichText::new(
+                                "These project folders could not be loaded cleanly.",
+                            )
+                            .weak(),
+                        );
+                        for error in self.catalog.errors.clone() {
+                            ui.colored_label(
+                                ui.visuals().error_fg_color,
+                                format!("{}: {}", error.root.display(), error.message),
+                            );
+                        }
+                    });
+                }
+            });
     }
 
     fn dashboard_ui(&mut self, ui: &mut egui::Ui) {
@@ -825,16 +970,43 @@ impl VideoPrepareApp {
 
     fn create_project_from_script(&mut self) {
         let project_id = self.create_project_id.trim().to_owned();
+        let script_text = self.create_script_text.trim().to_owned();
         let script_path = self.create_script_path.trim().to_owned();
+
+        if project_id.is_empty() {
+            self.project_status = "Project ID is required.".to_owned();
+            self.project_status_is_error = true;
+            return;
+        }
+        if script_text.is_empty() && script_path.is_empty() {
+            self.project_status = "Paste a script or provide a .vprep file path.".to_owned();
+            self.project_status_is_error = true;
+            return;
+        }
+
         let data_root = self.settings.current().safe.data_root.clone();
-        match create_project_from_script_path(&data_root, &project_id, &script_path) {
+        let (result, source) = if !script_text.is_empty() {
+            (
+                create_project_from_script_text(&data_root, &project_id, &script_text),
+                "pasted script",
+            )
+        } else {
+            (
+                create_project_from_script_path(&data_root, &project_id, &script_path),
+                ".vprep file",
+            )
+        };
+
+        match result {
             Ok(project) => {
-                self.project_status = format!("Created project `{}`.", project.metadata.project_id);
-                self.project_status_is_error = false;
+                let created_id = project.metadata.project_id.clone();
                 self.create_project_id.clear();
+                self.create_script_text.clear();
                 self.create_script_path.clear();
                 self.select_project(project);
                 self.refresh_projects();
+                self.project_status = format!("Created project `{created_id}` from {source}.");
+                self.project_status_is_error = false;
                 self.screen = Screen::Dashboard;
             }
             Err(error) => {
@@ -1423,17 +1595,54 @@ impl VideoPrepareApp {
 }
 
 pub fn run_desktop() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1120.0, 760.0])
+            .with_min_inner_size([840.0, 620.0]),
+        ..Default::default()
+    };
     eframe::run_native(
         "Video Prepare",
-        eframe::NativeOptions::default(),
-        Box::new(|_creation_context| Ok(Box::new(VideoPrepareApp::default()))),
+        options,
+        Box::new(|creation_context| {
+            configure_style(&creation_context.egui_ctx);
+            Ok(Box::new(VideoPrepareApp::default()))
+        }),
     )
 }
 
+fn configure_style(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    style.spacing.button_padding = egui::vec2(14.0, 7.0);
+    style.spacing.interact_size = egui::vec2(40.0, 32.0);
+    ctx.set_style(style);
+}
+
 fn nav_button(ui: &mut egui::Ui, screen: &mut Screen, target: Screen, label: &str) {
-    if ui.selectable_label(*screen == target, label).clicked() {
+    if ui
+        .selectable_label(*screen == target, egui::RichText::new(label).size(15.0))
+        .clicked()
+    {
         *screen = target;
     }
+}
+
+fn status_badge(ui: &mut egui::Ui, label: &str, state: crate::TaskState) {
+    let color = match state {
+        crate::TaskState::Completed => egui::Color32::from_rgb(74, 222, 128),
+        crate::TaskState::Failed => egui::Color32::from_rgb(248, 113, 113),
+        crate::TaskState::Running
+        | crate::TaskState::Partial
+        | crate::TaskState::Interrupted
+        | crate::TaskState::UnknownRemote => egui::Color32::from_rgb(250, 204, 21),
+        crate::TaskState::Pending | crate::TaskState::Skipped => egui::Color32::from_gray(160),
+    };
+    ui.label(
+        egui::RichText::new(format!("{label}: {}", state_text(state)))
+            .monospace()
+            .color(color),
+    );
 }
 
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {

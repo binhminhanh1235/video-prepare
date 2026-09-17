@@ -155,6 +155,17 @@ pub fn discover_projects(
     Ok(catalog)
 }
 
+pub fn create_project_from_script_text(
+    data_root: impl AsRef<Path>,
+    project_id: &str,
+    raw: &str,
+) -> Result<StoredProject, ProjectActionError> {
+    let prepared = parse_script(raw).map_err(ProjectError::from)?;
+    ProjectStore::new(data_root.as_ref())
+        .create(project_id, raw, &prepared)
+        .map_err(ProjectActionError::from)
+}
+
 pub fn create_project_from_script_path(
     data_root: impl AsRef<Path>,
     project_id: &str,
@@ -166,10 +177,7 @@ pub fn create_project_from_script_path(
             path: script_path,
             source,
         })?;
-    let prepared = parse_script(&raw).map_err(ProjectError::from)?;
-    ProjectStore::new(data_root.as_ref())
-        .create(project_id, &raw, &prepared)
-        .map_err(ProjectActionError::from)
+    create_project_from_script_text(data_root, project_id, &raw)
 }
 
 pub fn open_project_from_data_root(
@@ -264,6 +272,20 @@ mod tests {
         });
         assert_eq!(catalog.projects[0].project_id, "a");
         assert_eq!(catalog.projects[1].project_id, "b");
+    }
+
+    #[test]
+    fn pasted_script_create_persists_the_exact_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = include_str!("../examples/demo.vprep");
+
+        let created = create_project_from_script_text(temp.path(), "pasted-project", raw).unwrap();
+        let persisted = fs::read_to_string(created.root.join("input/script.vprep")).unwrap();
+        let reopened = open_project_from_data_root(temp.path(), "pasted-project").unwrap();
+
+        assert_eq!(persisted, raw);
+        assert_eq!(reopened.metadata, created.metadata);
+        assert_eq!(reopened.status, created.status);
     }
 
     #[test]
