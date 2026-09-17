@@ -3,6 +3,7 @@ pub mod audio_artifacts;
 pub mod connection_tests;
 pub mod desktop;
 pub mod inspection;
+pub mod manual_visual;
 pub mod orchestration;
 pub mod project;
 pub mod project_catalog;
@@ -31,6 +32,10 @@ pub use desktop::{run_desktop, VideoPrepareApp};
 pub use inspection::{
     inspect_project, AudioAttemptInspection, AudioInspection, InspectionProblem, ProjectInspection,
     SceneInspection, VisualRequestInspection,
+};
+pub use manual_visual::{
+    import_manual_visual_asset, ManualVisualError, ManualVisualImportSummary,
+    MANUAL_VISUAL_PROVENANCE_SCHEMA_VERSION,
 };
 pub use orchestration::{
     execute_flow_retry, execute_project_run, plan_audio_next_step, AudioNextStep, FlowRetryReport,
