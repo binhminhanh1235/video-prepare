@@ -34,7 +34,9 @@ fn format_script_candidate(input: &str) -> String {
     let normalized_newlines = input.replace("\r\n", "\n").replace('\r', "\n");
     let without_bom = normalized_newlines.trim_start_matches('\u{feff}');
     let without_fence = strip_outer_markdown_fence(without_bom);
-    repair_scenes_yaml_indentation(&without_fence)
+    let repaired_indentation = repair_scenes_yaml_indentation(&without_fence);
+    let repaired_scenes = repair_flattened_tagged_scenes(&repaired_indentation);
+    repair_omnivoice_markdown(&repaired_scenes)
 }
 
 fn strip_outer_markdown_fence(input: &str) -> String {
@@ -105,6 +107,291 @@ fn repair_scenes_yaml_indentation(input: &str) -> String {
     }
 
     let mut repaired = output.join("\n");
+    if had_trailing_newline {
+        repaired.push('\n');
+    }
+    repaired
+}
+
+
+#[derive(Debug)]
+struct RecoveredScene {
+    id: String,
+    visuals: Vec<RecoveredVisual>,
+}
+
+#[derive(Debug)]
+struct RecoveredVisual {
+    id: String,
+    media: Option<String>,
+    queries: Vec<String>,
+    count: Option<String>,
+}
+
+fn repair_flattened_tagged_scenes(input: &str) -> String {
+    let lines: Vec<&str> = input.lines().collect();
+    let Some(scenes_marker) = lines.iter().position(|line| line.trim() == SCENES_MARKER) else {
+        return input.to_owned();
+    };
+    let Some(omnivoice_marker) = lines.iter().position(|line| line.trim() == OMNIVOICE_MARKER)
+    else {
+        return input.to_owned();
+    };
+    if scenes_marker >= omnivoice_marker {
+        return input.to_owned();
+    }
+
+    let payload = &lines[scenes_marker + 1..omnivoice_marker];
+    if payload
+        .iter()
+        .any(|line| line.trim_start().starts_with("- id:"))
+    {
+        return input.to_owned();
+    }
+
+    let scene_id_re = Regex::new(r"^S\d{2,}$").expect("scene id regex is valid");
+    let visual_id_re = Regex::new(r"^V\d{2,}$").expect("visual id regex is valid");
+    let mut format_version: Option<String> = None;
+    let mut saw_scenes_key = false;
+    let mut recovered_shape = false;
+    let mut scenes = Vec::new();
+    let mut current_scene: Option<RecoveredScene> = None;
+    let mut current_visual: Option<RecoveredVisual> = None;
+    let mut in_queries = false;
+
+    for raw_line in payload {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("format_version:") {
+            if format_version.is_some() {
+                return input.to_owned();
+            }
+            let value = value.trim();
+            if value.is_empty() {
+                return input.to_owned();
+            }
+            format_version = Some(value.to_owned());
+            continue;
+        }
+
+        if trimmed == "scenes:" {
+            if saw_scenes_key {
+                return input.to_owned();
+            }
+            saw_scenes_key = true;
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("id:") {
+            let id = value.trim();
+            if scene_id_re.is_match(id) {
+                if let Some(visual) = current_visual.take() {
+                    let Some(scene) = current_scene.as_mut() else {
+                        return input.to_owned();
+                    };
+                    scene.visuals.push(visual);
+                }
+                if let Some(scene) = current_scene.take() {
+                    scenes.push(scene);
+                }
+                current_scene = Some(RecoveredScene {
+                    id: id.to_owned(),
+                    visuals: Vec::new(),
+                });
+                in_queries = false;
+                recovered_shape = true;
+                continue;
+            }
+
+            if visual_id_re.is_match(id) {
+                let Some(scene) = current_scene.as_mut() else {
+                    return input.to_owned();
+                };
+                if let Some(visual) = current_visual.take() {
+                    scene.visuals.push(visual);
+                }
+                current_visual = Some(RecoveredVisual {
+                    id: id.to_owned(),
+                    media: None,
+                    queries: Vec::new(),
+                    count: None,
+                });
+                in_queries = false;
+                recovered_shape = true;
+                continue;
+            }
+
+            return input.to_owned();
+        }
+
+        if trimmed == "visuals:" {
+            if current_scene.is_none() || current_visual.is_some() {
+                return input.to_owned();
+            }
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("media:") {
+            let Some(visual) = current_visual.as_mut() else {
+                return input.to_owned();
+            };
+            if visual.media.is_some() {
+                return input.to_owned();
+            }
+            let value = value.trim();
+            if value.is_empty() {
+                return input.to_owned();
+            }
+            visual.media = Some(value.to_owned());
+            in_queries = false;
+            continue;
+        }
+
+        if trimmed == "queries:" {
+            if current_visual.is_none() || in_queries {
+                return input.to_owned();
+            }
+            in_queries = true;
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("count:") {
+            let Some(visual) = current_visual.as_mut() else {
+                return input.to_owned();
+            };
+            if visual.count.is_some() {
+                return input.to_owned();
+            }
+            let value = value.trim();
+            if value.is_empty() {
+                return input.to_owned();
+            }
+            visual.count = Some(value.to_owned());
+            in_queries = false;
+            continue;
+        }
+
+        if in_queries {
+            let query = trimmed.strip_prefix("- ").unwrap_or(trimmed).trim();
+            if query.is_empty() || serde_yaml::from_str::<String>(query).is_err() {
+                return input.to_owned();
+            }
+            let Some(visual) = current_visual.as_mut() else {
+                return input.to_owned();
+            };
+            visual.queries.push(query.to_owned());
+            continue;
+        }
+
+        return input.to_owned();
+    }
+
+    if let Some(visual) = current_visual.take() {
+        let Some(scene) = current_scene.as_mut() else {
+            return input.to_owned();
+        };
+        scene.visuals.push(visual);
+    }
+    if let Some(scene) = current_scene.take() {
+        scenes.push(scene);
+    }
+
+    if !recovered_shape || !saw_scenes_key || scenes.is_empty() {
+        return input.to_owned();
+    }
+    let Some(format_version) = format_version else {
+        return input.to_owned();
+    };
+
+    if scenes.iter().any(|scene| {
+        scene.visuals.is_empty()
+            || scene.visuals.iter().any(|visual| {
+                visual.media.is_none()
+                    || visual.queries.is_empty()
+                    || visual.count.is_none()
+            })
+    }) {
+        return input.to_owned();
+    }
+
+    let mut canonical = format!("format_version: {format_version}\nscenes:\n");
+    for scene in scenes {
+        canonical.push_str(&format!("  - id: {}\n    visuals:\n", scene.id));
+        for visual in scene.visuals {
+            canonical.push_str(&format!(
+                "      - id: {}\n        media: {}\n        queries:\n",
+                visual.id,
+                visual.media.expect("validated media")
+            ));
+            for query in visual.queries {
+                canonical.push_str(&format!("          - {query}\n"));
+            }
+            canonical.push_str(&format!(
+                "        count: {}\n",
+                visual.count.expect("validated count")
+            ));
+        }
+    }
+
+    let mut repaired = lines[..=scenes_marker].join("\n");
+    repaired.push('\n');
+    repaired.push_str(canonical.trim_end_matches('\n'));
+    repaired.push('\n');
+    repaired.push_str(&lines[omnivoice_marker..].join("\n"));
+    if input.ends_with('\n') {
+        repaired.push('\n');
+    }
+    repaired
+}
+
+fn repair_omnivoice_markdown(input: &str) -> String {
+    let had_trailing_newline = input.ends_with('\n');
+    let mut lines: Vec<String> = input.lines().map(str::to_owned).collect();
+    let Some(marker) = lines
+        .iter()
+        .position(|line| line.trim() == OMNIVOICE_MARKER)
+    else {
+        return input.to_owned();
+    };
+
+    let section_re = Regex::new(
+        r"(?i)^S\d+\s*[—–-]\s*\d{1,2}:\d{2}(?::\d{2})?\s*[—–-]\s*\d{1,2}:\d{2}(?::\d{2})?\s*$",
+    )
+    .expect("plain OmniVoice section regex is valid");
+
+    let mut has_title = lines[marker + 1..].iter().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("# ") && !trimmed.starts_with("## ")
+    });
+    let mut changed = false;
+
+    for line in lines.iter_mut().skip(marker + 1) {
+        let trimmed = line.trim().to_owned();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if section_re.is_match(&trimmed) {
+            *line = format!("## {trimmed}");
+            changed = true;
+            continue;
+        }
+
+        if !has_title && !trimmed.starts_with('#') {
+            *line = format!("# {trimmed}");
+            has_title = true;
+            changed = true;
+        }
+    }
+
+    if !changed {
+        return input.to_owned();
+    }
+
+    let mut repaired = lines.join("\n");
     if had_trailing_newline {
         repaired.push('\n');
     }
@@ -182,6 +469,93 @@ scenes:
         let prepared = parse_script(&fenced).expect("outer Markdown fence should be removed");
 
         assert_eq!(prepared.omnivoice.title, "Why Silence Is Powerful");
+    }
+
+    fn flattened_tagged_script() -> &'static str {
+        r#"--- SCENES ---
+format_version: 1
+scenes:
+
+id: S01
+visuals:
+
+id: V01
+media: video
+queries:
+
+"exhausted college student closing laptop late night desk lamp"
+
+"tired man rubbing eyes in front of computer dark room"
+count: 2
+
+id: S02
+visuals:
+
+id: V01
+media: image
+queries:
+
+"young adult sitting on edge of bed staring at floor morning"
+
+"frustrated person looking at notebook leaning back in chair"
+count: 1
+
+--- OMNIVOICE ---
+
+The Real Reason We Learn
+
+S01 - 0:00-0:20
+[WARM] Nobody burns out from learning.
+
+S02 - 0:20-0:40
+And when the only reason you sit down to study is external pressure.
+"#
+    }
+
+    #[test]
+    fn repairs_flattened_tagged_llm_output() {
+        let prepared =
+            parse_script(flattened_tagged_script()).expect("tagged LLM output should parse");
+
+        assert_eq!(prepared.scenes.len(), 2);
+        assert_eq!(prepared.scenes[0].id, "S01");
+        assert_eq!(prepared.scenes[0].visuals[0].queries.len(), 2);
+        assert_eq!(prepared.scenes[0].visuals[0].count, 2);
+        assert_eq!(prepared.scenes[1].visuals[0].media, crate::script::MediaKind::Image);
+        assert_eq!(prepared.omnivoice.title, "The Real Reason We Learn");
+        assert_eq!(prepared.omnivoice.sections.len(), 2);
+        assert!(prepared
+            .omnivoice
+            .raw_markdown
+            .contains("# The Real Reason We Learn"));
+        assert!(prepared
+            .omnivoice
+            .raw_markdown
+            .contains("## S01 - 0:00-0:20"));
+    }
+
+    #[test]
+    fn formats_flattened_tagged_llm_output_to_canonical_shape() {
+        let formatted =
+            format_script(flattened_tagged_script()).expect("tagged LLM output should format");
+
+        assert!(formatted.contains("\n  - id: S01\n    visuals:\n"));
+        assert!(formatted.contains(
+            "\n          - \"exhausted college student closing laptop late night desk lamp\"\n"
+        ));
+        assert!(formatted.contains("\n# The Real Reason We Learn\n"));
+        assert!(formatted.contains("\n## S02 - 0:20-0:40\n"));
+    }
+
+    #[test]
+    fn does_not_silently_drop_unknown_fields_in_flattened_input() {
+        let invalid = flattened_tagged_script().replace(
+            "media: video",
+            "media: video\nmood: cinematic",
+        );
+        let error = parse_script(&invalid).expect_err("unknown fields must still fail");
+
+        assert_eq!(error.code(), "SCRIPT_INVALID_SCENES_YAML");
     }
 
     #[test]
