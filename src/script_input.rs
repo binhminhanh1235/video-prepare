@@ -113,7 +113,6 @@ fn repair_scenes_yaml_indentation(input: &str) -> String {
     repaired
 }
 
-
 #[derive(Debug)]
 struct RecoveredScene {
     id: String,
@@ -133,7 +132,9 @@ fn repair_flattened_tagged_scenes(input: &str) -> String {
     let Some(scenes_marker) = lines.iter().position(|line| line.trim() == SCENES_MARKER) else {
         return input.to_owned();
     };
-    let Some(omnivoice_marker) = lines.iter().position(|line| line.trim() == OMNIVOICE_MARKER)
+    let Some(omnivoice_marker) = lines
+        .iter()
+        .position(|line| line.trim() == OMNIVOICE_MARKER)
     else {
         return input.to_owned();
     };
@@ -309,9 +310,7 @@ fn repair_flattened_tagged_scenes(input: &str) -> String {
     if scenes.iter().any(|scene| {
         scene.visuals.is_empty()
             || scene.visuals.iter().any(|visual| {
-                visual.media.is_none()
-                    || visual.queries.is_empty()
-                    || visual.count.is_none()
+                visual.media.is_none() || visual.queries.is_empty() || visual.count.is_none()
             })
     }) {
         return input.to_owned();
@@ -521,7 +520,10 @@ And when the only reason you sit down to study is external pressure.
         assert_eq!(prepared.scenes[0].id, "S01");
         assert_eq!(prepared.scenes[0].visuals[0].queries.len(), 2);
         assert_eq!(prepared.scenes[0].visuals[0].count, 2);
-        assert_eq!(prepared.scenes[1].visuals[0].media, crate::script::MediaKind::Image);
+        assert_eq!(
+            prepared.scenes[1].visuals[0].media,
+            crate::script::MediaKind::Image
+        );
         assert_eq!(prepared.omnivoice.title, "The Real Reason We Learn");
         assert_eq!(prepared.omnivoice.sections.len(), 2);
         assert!(prepared
@@ -549,10 +551,8 @@ And when the only reason you sit down to study is external pressure.
 
     #[test]
     fn does_not_silently_drop_unknown_fields_in_flattened_input() {
-        let invalid = flattened_tagged_script().replace(
-            "media: video",
-            "media: video\nmood: cinematic",
-        );
+        let invalid =
+            flattened_tagged_script().replace("media: video", "media: video\nmood: cinematic");
         let error = parse_script(&invalid).expect_err("unknown fields must still fail");
 
         assert_eq!(error.code(), "SCRIPT_INVALID_SCENES_YAML");
