@@ -44,7 +44,19 @@ input file
    +-- OMNIVOICE payload -> preserved as native Markdown
 ```
 
-Phan OMNIVOICE phai duoc giu nguyen noi dung. Video Prepare khong tu y rewrite, split chunk, thay directive hoac chuan hoa narration text truoc khi gui sang OmniVoice.
+Voi input canonical, phan OMNIVOICE duoc giu nguyen noi dung. Video Prepare khong split chunk, thay directive hoac rewrite narration text truoc khi gui sang OmniVoice. Neu strict parse fail va input den tu paste/LLM bi mat presentation formatting, tolerant ingest layer co the them lai heading structural `#` / `##`; narration text va directive van duoc giu nguyen.
+
+### 1.1 Tolerant tagged ingest cho output tu LLM
+
+Hai marker top-level la anchor cua fallback parser. Neu strict parser fail, Video Prepare co the repair mot tap nho cac loi presentation thuong gap khi copy tu chat:
+
+- YAML SCENES bi flatten, mat indent va mat list marker `-`;
+- query van la scalar string nhung bi tach thanh cac dong phang;
+- OmniVoice title bi mat prefix `# `;
+- OmniVoice section header `S01 - 0:00-0:20` bi mat prefix `## `;
+- outer Markdown code fence, BOM, CRLF va leading tab presentation.
+
+Fallback khong duoc bo qua field la va khong duoc suy doan semantic. Sau khi normalize, toan bo strict validation v1 van phai PASS. Neu gap field khong biet, thieu media/query/count, ID khong hop le, timeline sai, hoac mapping scene/section sai, input bi reject.
 
 ## 2. Vi du day du
 
@@ -395,21 +407,23 @@ Khi import script, Video Prepare phai validate theo thu tu:
 
 ```text
 1. file readable UTF-8
-2. exact SCENES marker exists once
-3. exact OMNIVOICE marker exists once
-4. marker order is correct
-5. SCENES YAML parses
-6. format_version == 1
-7. scene IDs unique
-8. visual IDs unique within scene
-9. visual media valid
-10. queries non-empty
-11. count >= 1
-12. parse OmniVoice section headers for cross-validation
-13. OmniVoice IDs unique
-14. timing valid and non-overlapping
-15. Scene IDs == OmniVoice Section IDs
-16. OmniVoice body non-empty
+2. strict parse canonical input
+3. neu strict parse fail: safe presentation normalization dua tren exact SCENES/OMNIVOICE tags
+4. exact SCENES marker exists once
+5. exact OMNIVOICE marker exists once
+6. marker order is correct
+7. SCENES YAML parses
+8. format_version == 1
+9. scene IDs unique
+10. visual IDs unique within scene
+11. visual media valid
+12. queries non-empty
+13. count >= 1
+14. parse OmniVoice section headers for cross-validation
+15. OmniVoice IDs unique
+16. timing valid and non-overlapping
+17. Scene IDs == OmniVoice Section IDs
+18. OmniVoice body non-empty
 ```
 
 Neu mot validation fail, khong chay visual flow va khong import audio project.
@@ -561,7 +575,7 @@ Trong `format_version: 1`:
 - `Scene ID == OmniVoice Section ID`;
 - visual media enum giu `image|video|either`;
 - runtime settings khong duoc chen vao script;
-- OmniVoice block duoc giu native, khong bi Video Prepare rewrite;
+- canonical OmniVoice block duoc giu native; tolerant fallback chi duoc repair presentation heading, khong rewrite narration/directive;
 - them provider moi khong duoc bat buoc thay doi script.
 
 Neu can breaking change, tao `format_version: 2` thay vi am tham thay doi semantics cua v1.

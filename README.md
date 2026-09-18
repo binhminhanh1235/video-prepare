@@ -74,6 +74,33 @@ Doc day du: [docs/script-format-v1.md](docs/script-format-v1.md)
 
 Canonical example: [examples/demo.vprep](examples/demo.vprep)
 
+### LLM/paste compatibility
+
+Canonical YAML + Markdown van la format duoc khuyen nghi, nhung input co hai tag chuan van duoc thu normalize an toan khi LLM lam mat presentation formatting.
+
+Video Prepare co the recover cac truong hop pho bien nhu:
+
+```text
+--- SCENES ---
+format_version: 1
+scenes:
+id: S01
+visuals:
+id: V01
+media: video
+queries:
+"query one"
+"query two"
+count: 2
+
+--- OMNIVOICE ---
+Project title
+S01 - 0:00-0:20
+Narration...
+```
+
+Fallback chi sua presentation structure: khoi phuc YAML list/indent va them `#` / `##` cho title/section OmniVoice. Semantic validation khong duoc noi long: field la, ID sai, media sai, query rong, count sai, timeline overlap hoac scene/section mismatch van bi reject.
+
 ## Runtime settings UI
 
 Tat ca execution settings duoc dua ra UI thay vi yeu cau sua config file:
