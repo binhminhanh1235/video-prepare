@@ -1,3 +1,5 @@
+use regex::Regex;
+
 use crate::script::{self, PreparedScript, ScriptError, OMNIVOICE_MARKER, SCENES_MARKER};
 
 /// Parse a Video Prepare script with a conservative formatting fallback for pasted input.
