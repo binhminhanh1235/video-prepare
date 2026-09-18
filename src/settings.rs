@@ -13,6 +13,8 @@ pub const MAX_DOWNLOAD_CONCURRENCY: u32 = 32;
 pub const SETTINGS_FILE_NAME: &str = "preferences.json";
 pub const SETTINGS_DIR_NAME: &str = "video-prepare";
 pub const SETTINGS_DIR_OVERRIDE_ENV: &str = "VIDEO_PREPARE_CONFIG_DIR";
+pub const PORTABLE_MARKER_FILE_NAME: &str = ".portable";
+pub const PORTABLE_SECRETS_FILE_NAME: &str = "portable-secrets.json";
 const SETTINGS_SCHEMA_VERSION: u32 = 1;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const SECRET_SERVICE_NAME: &str = "video-prepare";
@@ -107,7 +109,7 @@ impl PersistedSettingsDocument {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSecrets {
     pub pexels_api_key: Option<String>,
     pub omnivoice_token: Option<String>,
@@ -283,7 +285,7 @@ impl RuntimeSettingsStore {
             }
         };
 
-        let (secrets, secrets_restored, secret_persistence_warning) =
+        let (mut secrets, mut secrets_restored, secret_persistence_warning) =
             if use_system_secret_store && system_secret_store_supported() {
                 match load_system_runtime_secrets() {
                     Ok(secrets) => {
@@ -300,6 +302,22 @@ impl RuntimeSettingsStore {
             } else {
                 (RuntimeSecrets::default(), false, None)
             };
+
+        let portable_secrets_file = path.with_file_name(PORTABLE_SECRETS_FILE_NAME);
+        if portable_secrets_file.is_file() {
+            if let Ok(raw) = fs::read_to_string(&portable_secrets_file) {
+                if let Ok(portable_secrets) = serde_json::from_str::<RuntimeSecrets>(&raw) {
+                    if secrets.pexels_api_key.is_none() && portable_secrets.pexels_api_key.is_some() {
+                        secrets.pexels_api_key = portable_secrets.pexels_api_key;
+                        secrets_restored = true;
+                    }
+                    if secrets.omnivoice_token.is_none() && portable_secrets.omnivoice_token.is_some() {
+                        secrets.omnivoice_token = portable_secrets.omnivoice_token;
+                        secrets_restored = true;
+                    }
+                }
+            }
+        }
 
         Ok(Self {
             current: Arc::new(RuntimeSettingsSnapshot {
@@ -369,6 +387,61 @@ impl RuntimeSettingsStore {
         self.secret_persistence_warning.as_deref()
     }
 
+    pub fn is_portable(&self) -> bool {
+        self.persistence_path
+            .as_ref()
+            .is_some_and(|path| is_portable_path(path))
+    }
+
+    pub fn make_portable(&mut self) -> Result<PathBuf, SettingsError> {
+        let dir = env::current_dir().map_err(|e| SettingsError::PersistenceLocation(e.to_string()))?;
+        let _ = fs::write(dir.join(PORTABLE_MARKER_FILE_NAME), "portable\n");
+        let target_path = dir.join(SETTINGS_FILE_NAME);
+
+        let safe = self.current.safe.clone();
+        let secrets = self.current.secrets.clone();
+        let revision = self.current.revision.max(1);
+
+        persist_safe_preferences(&target_path, revision, &safe)?;
+        if secrets.pexels_api_key.is_some() || secrets.omnivoice_token.is_some() {
+            let portable_secrets_path = target_path.with_file_name(PORTABLE_SECRETS_FILE_NAME);
+            if let Ok(raw) = serde_json::to_string_pretty(&secrets) {
+                let _ = fs::write(portable_secrets_path, raw);
+            }
+        }
+
+        self.persistence_path = Some(target_path.clone());
+        self.loaded_from_disk = true;
+        Ok(target_path)
+    }
+
+    pub fn make_system(&mut self) -> Result<PathBuf, SettingsError> {
+        if let Ok(dir) = env::current_dir() {
+            let marker = dir.join(PORTABLE_MARKER_FILE_NAME);
+            if marker.exists() {
+                let _ = fs::remove_file(marker);
+            }
+        }
+        let target_path = system_preferences_path()?;
+        let safe = self.current.safe.clone();
+        let revision = self.current.revision.max(1);
+        persist_safe_preferences(&target_path, revision, &safe)?;
+
+        self.persistence_path = Some(target_path.clone());
+        self.loaded_from_disk = true;
+        Ok(target_path)
+    }
+
+    pub fn import_from_system_appdata(&mut self) -> Result<SafePreferences, SettingsError> {
+        let system_path = system_preferences_path()?;
+        let raw = fs::read_to_string(&system_path).map_err(|error| SettingsError::PersistenceRead {
+            path: system_path.clone(),
+            message: error.to_string(),
+        })?;
+        let (_rev, safe) = decode_persisted_preferences(&system_path, &raw)?;
+        Ok(safe)
+    }
+
     pub fn apply(
         &mut self,
         draft: &RuntimeSettingsDraft,
@@ -383,6 +456,17 @@ impl RuntimeSettingsStore {
         if let Some(path) = &self.persistence_path {
             persist_safe_preferences(path, revision, &safe)?;
             self.loaded_from_disk = true;
+
+            if is_portable_path(path) || path.with_file_name(PORTABLE_SECRETS_FILE_NAME).exists() {
+                let portable_secrets_path = path.with_file_name(PORTABLE_SECRETS_FILE_NAME);
+                if secrets.pexels_api_key.is_some() || secrets.omnivoice_token.is_some() {
+                    if let Ok(raw) = serde_json::to_string_pretty(&secrets) {
+                        let _ = fs::write(portable_secrets_path, raw);
+                    }
+                } else if portable_secrets_path.exists() {
+                    let _ = fs::remove_file(portable_secrets_path);
+                }
+            }
         }
 
         self.secret_persistence_warning = None;
@@ -446,11 +530,31 @@ pub enum SettingsError {
     PersistenceWrite { path: PathBuf, message: String },
 }
 
-pub fn default_preferences_path() -> Result<PathBuf, SettingsError> {
-    if let Some(path) = env::var_os(SETTINGS_DIR_OVERRIDE_ENV).filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(path).join(SETTINGS_FILE_NAME));
+pub fn detect_portable_dir() -> Option<PathBuf> {
+    if let Ok(cwd) = env::current_dir() {
+        if cwd.join(PORTABLE_MARKER_FILE_NAME).is_file()
+            || cwd.join("portable").is_file()
+            || cwd.join(SETTINGS_FILE_NAME).is_file()
+        {
+            return Some(cwd);
+        }
     }
 
+    if let Ok(exe) = env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            if parent.join(PORTABLE_MARKER_FILE_NAME).is_file()
+                || parent.join("portable").is_file()
+                || parent.join(SETTINGS_FILE_NAME).is_file()
+            {
+                return Some(parent.to_path_buf());
+            }
+        }
+    }
+
+    None
+}
+
+pub fn system_preferences_path() -> Result<PathBuf, SettingsError> {
     #[cfg(target_os = "windows")]
     if let Some(path) = env::var_os("APPDATA").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path)
@@ -488,6 +592,41 @@ pub fn default_preferences_path() -> Result<PathBuf, SettingsError> {
                 .join(SETTINGS_FILE_NAME)
         })
         .map_err(|error| SettingsError::PersistenceLocation(error.to_string()))
+}
+
+pub fn is_portable_path(path: &Path) -> bool {
+    let parent = match path.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    if parent.join(PORTABLE_MARKER_FILE_NAME).is_file() || parent.join("portable").is_file() {
+        return true;
+    }
+    if let Ok(cwd) = env::current_dir() {
+        if cwd == parent {
+            return true;
+        }
+    }
+    if let Ok(exe) = env::current_exe() {
+        if let Some(exe_parent) = exe.parent() {
+            if exe_parent == parent {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn default_preferences_path() -> Result<PathBuf, SettingsError> {
+    if let Some(path) = env::var_os(SETTINGS_DIR_OVERRIDE_ENV).filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path).join(SETTINGS_FILE_NAME));
+    }
+
+    if let Some(portable_dir) = detect_portable_dir() {
+        return Ok(portable_dir.join(SETTINGS_FILE_NAME));
+    }
+
+    system_preferences_path()
 }
 
 pub fn extract_omnivoice_url(input: &str) -> Result<String, SettingsError> {
@@ -972,5 +1111,43 @@ Public MCP: https://neo-station.example/mcp"#;
         assert_eq!(parsed.data_root, PathBuf::from("custom-root"));
         assert_eq!(parsed.voice_name, "Narrator");
         assert_eq!(parsed.download_concurrency, DEFAULT_DOWNLOAD_CONCURRENCY);
+    }
+
+    #[test]
+    fn portable_settings_and_secrets_round_trip() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("preferences.json");
+        fs::write(temp.path().join(PORTABLE_MARKER_FILE_NAME), "portable").unwrap();
+
+        let mut store = RuntimeSettingsStore::with_persistence_path(&path);
+        assert!(is_portable_path(&path));
+
+        let mut draft = store.draft();
+        draft.data_root = "custom-portable-data".to_owned();
+        draft.visual_flow_enabled = true;
+        draft.audio_flow_enabled = true;
+        draft.omnivoice_url = "http://localhost:8888".to_owned();
+        draft.pexels_api_key = "pexels-secret-portable".to_owned();
+        draft.omnivoice_token = "token-secret-portable".to_owned();
+
+        store.apply(&draft).unwrap();
+
+        assert!(path.is_file());
+        let secrets_path = temp.path().join(PORTABLE_SECRETS_FILE_NAME);
+        assert!(secrets_path.is_file());
+
+        let reloaded = RuntimeSettingsStore::load_from_path(&path).unwrap();
+        assert_eq!(
+            reloaded.current().safe.data_root,
+            PathBuf::from("custom-portable-data")
+        );
+        assert_eq!(
+            reloaded.current().secrets.pexels_api_key.as_deref(),
+            Some("pexels-secret-portable")
+        );
+        assert_eq!(
+            reloaded.current().secrets.omnivoice_token.as_deref(),
+            Some("token-secret-portable")
+        );
     }
 }

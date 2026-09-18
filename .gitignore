@@ -19,3 +19,9 @@ projects/
 
 # Logs
 *.log
+
+# Portable config & secrets
+preferences.json
+portable-secrets.json
+.portable
+INDEX.md

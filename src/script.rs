@@ -396,7 +396,7 @@ fn parse_scenes(payload: &str) -> Result<Vec<SceneSpec>, ScriptError> {
     Ok(scenes)
 }
 
-fn parse_omnivoice(raw_markdown: &str) -> Result<OmniVoiceScript, ScriptError> {
+pub fn parse_omnivoice(raw_markdown: &str) -> Result<OmniVoiceScript, ScriptError> {
     let title_re = Regex::new(r"^#\s+(.+?)\s*$").expect("title regex is valid");
     let section_re = Regex::new(
         r"(?i)^##\s+(S\d+)\s*[—–-]\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[—–-]\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*$",
@@ -476,6 +476,38 @@ fn parse_omnivoice(raw_markdown: &str) -> Result<OmniVoiceScript, ScriptError> {
         title: titles.remove(0),
         sections,
     })
+}
+
+pub fn extract_section_narrations(raw_markdown: &str) -> Vec<(String, String)> {
+    let section_header_re = Regex::new(
+        r"(?i)^##\s+(S\d+)\s*[—–-]\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[—–-]\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*$",
+    )
+    .expect("section regex is valid");
+
+    let mut result = Vec::new();
+    let mut current_id: Option<String> = None;
+    let mut current_lines: Vec<String> = Vec::new();
+
+    for line in raw_markdown.lines() {
+        let trimmed = line.trim();
+        if let Some(captures) = section_header_re.captures(trimmed) {
+            if let Some(prev_id) = current_id.take() {
+                let narration = current_lines.join("\n").trim().to_owned();
+                result.push((prev_id, narration));
+                current_lines.clear();
+            }
+            current_id = Some(captures[1].to_ascii_uppercase());
+        } else if current_id.is_some() {
+            current_lines.push(line.to_owned());
+        }
+    }
+
+    if let Some(last_id) = current_id {
+        let narration = current_lines.join("\n").trim().to_owned();
+        result.push((last_id, narration));
+    }
+
+    result
 }
 
 fn parse_timestamp(value: &str) -> Result<u64, ScriptError> {
@@ -724,5 +756,25 @@ scenes:
         let parsed_a = parse_script(&a).unwrap();
         let parsed_b = parse_script(&b).unwrap();
         assert_ne!(parsed_a.input_sha256, parsed_b.input_sha256);
+    }
+
+    #[test]
+    fn extracts_section_narrations_correctly() {
+        let narrations = extract_section_narrations(DEMO);
+        assert_eq!(narrations.len(), 3);
+        assert_eq!(narrations[0].0, "S01");
+        assert!(narrations[0].1.contains("Most people believe silence means weakness"));
+        assert_eq!(narrations[1].0, "S02");
+        assert!(narrations[1].1.contains("You do not have to react to every provocation"));
+        assert_eq!(narrations[2].0, "S03");
+        assert!(narrations[2].1.contains("Silence gives you enough distance to see clearly"));
+    }
+
+    #[test]
+    fn parse_omnivoice_standalone() {
+        let omni = "\n# Demo Title\n\n## S01 - 0:00-0:10\nFirst line\n\n## S02 - 0:10-0:25\nSecond line\n";
+        let parsed = parse_omnivoice(omni).unwrap();
+        assert_eq!(parsed.title, "Demo Title");
+        assert_eq!(parsed.sections.len(), 2);
     }
 }

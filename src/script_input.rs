@@ -32,6 +32,80 @@ pub fn format_script(input: &str) -> Result<String, ScriptError> {
     Ok(candidate)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioInspectionResult {
+    pub raw_markdown: String,
+    pub script: Option<crate::script::OmniVoiceScript>,
+    pub status_message: String,
+    pub is_valid: bool,
+    pub section_narrations: Vec<(String, String)>,
+}
+
+pub fn inspect_audio_input(input: &str) -> AudioInspectionResult {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return AudioInspectionResult {
+            raw_markdown: String::new(),
+            script: None,
+            status_message: "No script entered".to_owned(),
+            is_valid: false,
+            section_narrations: Vec::new(),
+        };
+    }
+
+    let candidate = format_script_candidate(input);
+    let has_marker = candidate.contains(OMNIVOICE_MARKER);
+    let raw_payload = if let Some(pos) = candidate.find(OMNIVOICE_MARKER) {
+        let after = &candidate[pos + OMNIVOICE_MARKER.len()..];
+        let after = after
+            .strip_prefix("\r\n")
+            .or_else(|| after.strip_prefix('\n'))
+            .unwrap_or(after);
+        after.to_owned()
+    } else {
+        candidate.clone()
+    };
+
+    let narrations = script::extract_section_narrations(&raw_payload);
+
+    if raw_payload.trim().is_empty() {
+        return AudioInspectionResult {
+            raw_markdown: raw_payload,
+            script: None,
+            status_message: "OMNIVOICE script is empty".to_owned(),
+            is_valid: false,
+            section_narrations: Vec::new(),
+        };
+    }
+
+    match script::parse_omnivoice(&raw_payload) {
+        Ok(omni) => {
+            let (is_valid, status_message) = if has_marker {
+                (true, "Valid format".to_owned())
+            } else {
+                (
+                    false,
+                    "Audio format is valid, but missing '--- SCENES ---' and '--- OMNIVOICE ---' markers".to_owned(),
+                )
+            };
+            AudioInspectionResult {
+                raw_markdown: raw_payload,
+                script: Some(omni),
+                status_message,
+                is_valid,
+                section_narrations: narrations,
+            }
+        }
+        Err(err) => AudioInspectionResult {
+            raw_markdown: raw_payload,
+            script: None,
+            status_message: format!("Invalid format: {} · {}", err.code(), err),
+            is_valid: false,
+            section_narrations: narrations,
+        },
+    }
+}
+
 fn format_script_candidate(input: &str) -> String {
     let normalized_newlines = input.replace("\r\n", "\n").replace('\r', "\n");
     let without_bom = normalized_newlines.trim_start_matches('\u{feff}');
@@ -575,5 +649,24 @@ And when the only reason you sit down to study is external pressure.
         let tolerant = parse_script(&valid).unwrap();
 
         assert_eq!(tolerant.input_sha256, strict.input_sha256);
+    }
+
+    #[test]
+    fn inspect_audio_valid_and_invalid_inputs() {
+        let empty = inspect_audio_input("   ");
+        assert!(!empty.is_valid);
+        assert_eq!(empty.status_message, "No script entered");
+
+        let demo = include_str!("../examples/demo.vprep");
+        let valid = inspect_audio_input(demo);
+        assert!(valid.is_valid);
+        assert_eq!(valid.status_message, "Valid format");
+        assert_eq!(valid.script.as_ref().unwrap().title, "Why Silence Is Powerful");
+        assert_eq!(valid.section_narrations.len(), 3);
+
+        let invalid_time = demo.replace("## S01 - 0:00-0:20", "## S01 - 0:30-0:20");
+        let invalid = inspect_audio_input(&invalid_time);
+        assert!(!invalid.is_valid);
+        assert!(invalid.status_message.contains("SCRIPT_INVALID_SECTION_RANGE"));
     }
 }

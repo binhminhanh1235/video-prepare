@@ -17,8 +17,8 @@ use crate::{
     test_omnivoice_connection, test_pexels_connection, ConnectionTestReport, ConnectionTestTarget,
     FlowRetryReport, FlowRunDisposition, FlowRunReport, FlowTarget, ManualVisualImportSummary,
     OmniVoiceClient, ProjectCatalog, ProjectInspection, ProjectRunReport, QualityPreset,
-    RemoteAudioReconciliationReport, RunAction, RuntimeSettingsDraft, RuntimeSettingsStore,
-    StoredProject,
+    RemoteAudioReconciliationReport, RunAction, RuntimeSettingsDraft, RuntimeSettingsSnapshot,
+    RuntimeSettingsStore, StoredProject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +207,7 @@ pub struct VideoPrepareApp {
     workspace_action_status: String,
     workspace_action_status_is_error: bool,
     thumbnail_cache: HashMap<PathBuf, ThumbnailCacheEntry>,
+    confirm_delete_project_id: Option<String>,
 }
 
 impl Default for VideoPrepareApp {
@@ -299,6 +300,7 @@ impl Default for VideoPrepareApp {
             workspace_action_status: String::new(),
             workspace_action_status_is_error: false,
             thumbnail_cache: HashMap::new(),
+            confirm_delete_project_id: None,
         };
         app.refresh_projects();
         app
@@ -366,6 +368,45 @@ impl eframe::App for VideoPrepareApp {
                 Screen::Settings => self.settings_ui(ui),
             }
         });
+
+        if let Some(project_id) = self.confirm_delete_project_id.clone() {
+            egui::Window::new("Confirm project deletion")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_min_width(360.0);
+                    ui.label(
+                        egui::RichText::new(format!("Delete project `{project_id}`?"))
+                            .strong()
+                            .size(17.0),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "This permanently removes the project folder, script, and all downloaded assets from disk.",
+                        )
+                        .color(ui.visuals().warn_fg_color),
+                    );
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(
+                                egui::RichText::new("Delete permanently")
+                                    .color(ui.visuals().error_fg_color)
+                                    .strong(),
+                            )
+                            .clicked()
+                        {
+                            self.delete_project(&project_id);
+                            self.confirm_delete_project_id = None;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.confirm_delete_project_id = None;
+                        }
+                    });
+                });
+        }
 
         if self.run_worker.is_some()
             || self.flow_retry_worker.is_some()
@@ -488,6 +529,80 @@ impl VideoPrepareApp {
                             .hint_text("Paste your structured .vprep script here..."),
                     );
 
+                    let audio_inspection = if self.create_script_text.trim().is_empty() {
+                        None
+                    } else {
+                        Some(crate::inspect_audio_input(&self.create_script_text))
+                    };
+
+                    if let Some(audio) = &audio_inspection {
+                        ui.add_space(8.0);
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.strong("Audio script:");
+                                if audio.is_valid {
+                                    ui.label(
+                                        egui::RichText::new("✓ Valid format")
+                                            .strong()
+                                            .color(egui::Color32::from_rgb(134, 239, 172)),
+                                    );
+                                    if let Some(script) = &audio.script {
+                                        ui.label(egui::RichText::new(&script.title).strong());
+                                    }
+                                } else {
+                                    ui.colored_label(
+                                        ui.visuals().error_fg_color,
+                                        format!("✗ {}", audio.status_message),
+                                    );
+                                }
+                            });
+
+                            if let Some(script) = &audio.script {
+                                let duration = script
+                                    .sections
+                                    .last()
+                                    .map(|section| section.end_seconds)
+                                    .unwrap_or_default();
+                                ui.add_space(4.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(format!("{} narration sections", script.sections.len()));
+                                    ui.separator();
+                                    ui.label(format!("{} timeline", format_duration(duration)));
+                                });
+                            }
+
+                            if !audio.section_narrations.is_empty() {
+                                ui.add_space(4.0);
+                                ui.collapsing(
+                                    format!(
+                                        "Show audio script ({} sections)",
+                                        audio.section_narrations.len()
+                                    ),
+                                    |ui| {
+                                        for (sec_id, narration) in &audio.section_narrations {
+                                            ui.group(|ui| {
+                                                ui.strong(format!("Section {sec_id}"));
+                                                if narration.is_empty() {
+                                                    ui.weak("(no narration text)");
+                                                } else {
+                                                    ui.label(narration);
+                                                }
+                                            });
+                                        }
+                                    },
+                                );
+                            } else if !audio.raw_markdown.trim().is_empty() {
+                                ui.add_space(4.0);
+                                ui.collapsing("Show audio payload", |ui| {
+                                    ui.label(
+                                        egui::RichText::new(&audio.raw_markdown).monospace(),
+                                    );
+                                });
+                            }
+                        });
+                    }
+
                     let parsed_create_script = if self.create_script_text.trim().is_empty() {
                         None
                     } else {
@@ -519,7 +634,7 @@ impl VideoPrepareApp {
                                     ui.set_min_width(ui.available_width());
                                     ui.horizontal_wrapped(|ui| {
                                         ui.label(
-                                            egui::RichText::new("✓ Script ready")
+                                            egui::RichText::new("✓ Complete script ready")
                                                 .strong()
                                                 .color(egui::Color32::from_rgb(134, 239, 172)),
                                         );
@@ -567,7 +682,7 @@ impl VideoPrepareApp {
                                     );
                                     ui.label(
                                         egui::RichText::new(
-                                            "Fix the script in the editor above. Project creation stays disabled until validation passes.",
+                                            "Fix the script in the editor above. Project creation requires valid scenes and audio.",
                                         )
                                         .weak(),
                                     );
@@ -628,11 +743,20 @@ impl VideoPrepareApp {
                             .color(egui::Color32::from_rgb(96, 165, 250)),
                         );
                     }
+                    if !script_valid && (pasted_ready || file_ready) {
+                        ui.label(
+                            egui::RichText::new(
+                                "Script format needs attention before creating project.",
+                            )
+                            .color(ui.visuals().warn_fg_color)
+                            .small(),
+                        );
+                    }
 
                     ui.add_space(10.0);
                     if ui
                         .add_enabled(
-                            id_ready && script_valid && (pasted_ready || file_ready),
+                            id_ready && (pasted_ready || file_ready),
                             egui::Button::new(egui::RichText::new("Create project").strong()),
                         )
                         .clicked()
@@ -771,6 +895,20 @@ impl VideoPrepareApp {
                                         if ui.button("Continue").clicked() {
                                             self.open_project(&project_id);
                                         }
+                                        let busy = self.mutation_worker_active();
+                                        if ui
+                                            .add_enabled(
+                                                !busy,
+                                                egui::Button::new(
+                                                    egui::RichText::new("Delete")
+                                                        .color(ui.visuals().error_fg_color),
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.confirm_delete_project_id =
+                                                Some(project_id.clone());
+                                        }
                                     },
                                 );
                             });
@@ -880,6 +1018,19 @@ impl VideoPrepareApp {
                           }
                       }
                   }
+                  let busy = self.mutation_worker_active();
+                  if ui
+                      .add_enabled(
+                          !busy,
+                          egui::Button::new(
+                              egui::RichText::new("Delete project")
+                                  .color(ui.visuals().error_fg_color),
+                          ),
+                      )
+                      .clicked()
+                  {
+                      self.confirm_delete_project_id = Some(inspection.project_id.clone());
+                  }
                   let incomplete = inspection.incomplete_count();
                   ui.label(
                       egui::RichText::new(if incomplete == 0 {
@@ -911,6 +1062,77 @@ impl VideoPrepareApp {
           } else {
               ui.label(egui::RichText::new(&self.workspace_action_status).weak());
           }
+      }
+
+      if let Some(project) = &self.selected_project {
+          let omni = &project.prepared_script.omnivoice;
+          let duration_seconds = omni
+              .sections
+              .last()
+              .map(|section| section.end_seconds)
+              .unwrap_or_default();
+          let narrations = crate::extract_section_narrations(&omni.raw_markdown);
+
+          ui.add_space(12.0);
+          egui::Frame::group(ui.style()).show(ui, |ui| {
+              ui.set_min_width(ui.available_width());
+              ui.horizontal(|ui| {
+                  ui.vertical(|ui| {
+                      ui.horizontal_wrapped(|ui| {
+                          ui.label(
+                              egui::RichText::new("Audio Script (OmniVoice)")
+                                  .strong()
+                                  .size(18.0),
+                          );
+                          ui.label(
+                              egui::RichText::new("✓ Valid format")
+                                  .color(egui::Color32::from_rgb(134, 239, 172))
+                                  .strong(),
+                          );
+                          status_badge(ui, "Audio flow", inspection.audio_flow);
+                      });
+                      ui.label(format!("Title: {}", omni.title));
+                      ui.label(
+                          egui::RichText::new(format!(
+                              "{} sections · {} timeline",
+                              omni.sections.len(),
+                              format_duration(duration_seconds)
+                          ))
+                          .weak(),
+                      );
+                  });
+                  ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                      let script_text = omni.raw_markdown.clone();
+                      if ui.button("Copy audio script").clicked() {
+                          ui.ctx().copy_text(script_text);
+                          self.workspace_action_status =
+                              "Copied audio script to clipboard.".to_owned();
+                          self.workspace_action_status_is_error = false;
+                      }
+                  });
+              });
+
+              ui.add_space(6.0);
+              ui.collapsing(
+                  format!("Show audio script ({} sections)", omni.sections.len()),
+                  |ui| {
+                      if !narrations.is_empty() {
+                          for (sec_id, text) in &narrations {
+                              ui.group(|ui| {
+                                  ui.strong(format!("Section {sec_id}"));
+                                  if text.is_empty() {
+                                      ui.weak("(no narration text)");
+                                  } else {
+                                      ui.label(text);
+                                  }
+                              });
+                          }
+                      } else {
+                          ui.label(egui::RichText::new(&omni.raw_markdown).monospace());
+                      }
+                  },
+              );
+          });
       }
 
       ui.add_space(12.0);
@@ -1356,6 +1578,20 @@ impl VideoPrepareApp {
               status_badge(ui, "Visual", scene.visual_state);
               status_badge(ui, "Audio", scene.audio_state);
           });
+          if let Some(project) = &self.selected_project {
+              let narrations =
+                  crate::extract_section_narrations(&project.prepared_script.omnivoice.raw_markdown);
+              if let Some((_, text)) = narrations.iter().find(|(id, _)| id == &scene.id) {
+                  ui.add_space(6.0);
+                  ui.separator();
+                  ui.label(egui::RichText::new("Narration script:").strong());
+                  if text.is_empty() {
+                      ui.weak("(no narration text for this section)");
+                  } else {
+                      ui.label(text);
+                  }
+              }
+          }
       });
 
       ui.add_space(12.0);
@@ -1755,6 +1991,93 @@ impl VideoPrepareApp {
           if let Some(warning) = self.settings.secret_persistence_warning() {
               ui.colored_label(ui.visuals().warn_fg_color, warning);
           }
+      });
+
+      let is_portable = self.settings.is_portable();
+      ui.add_space(12.0);
+      egui::Frame::group(ui.style()).show(ui, |ui| {
+          ui.set_min_width(ui.available_width());
+          ui.horizontal(|ui| {
+              ui.vertical(|ui| {
+                  ui.horizontal_wrapped(|ui| {
+                      ui.label(egui::RichText::new("Portable Storage").strong().size(18.0));
+                      if is_portable {
+                          ui.label(
+                              egui::RichText::new("● Portable mode active")
+                                  .color(egui::Color32::from_rgb(134, 239, 172))
+                                  .strong(),
+                          );
+                      } else {
+                          ui.label(
+                              egui::RichText::new("○ System mode (AppData)")
+                                  .color(egui::Color32::from_rgb(250, 204, 21))
+                                  .strong(),
+                          );
+                      }
+                  });
+                  if let Some(path) = self.settings.persistence_path() {
+                      ui.label(egui::RichText::new(format!("Location: {}", path.display())).weak());
+                  }
+                  if is_portable {
+                      ui.small("Settings and credentials are self-contained in this folder. Copy this entire folder to another machine without reconfiguring.");
+                  } else {
+                      ui.small("Settings are stored in user AppData. Switch to Portable mode to bundle preferences into this folder.");
+                  }
+              });
+              ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                  if !is_portable {
+                      if ui.button(egui::RichText::new("Switch to Portable mode").strong()).clicked() {
+                          match self.settings.make_portable() {
+                              Ok(path) => {
+                                  self.draft = self.settings.draft();
+                                  self.status = format!(
+                                      "Switched to Portable mode. Saved settings to {}",
+                                      path.display()
+                                  );
+                                  self.status_is_error = false;
+                              }
+                              Err(error) => {
+                                  self.status = format!("Failed to activate portable mode: {error}");
+                                  self.status_is_error = true;
+                              }
+                          }
+                      }
+                  } else {
+                      if ui.button("Import from AppData").clicked() {
+                          match self.settings.import_from_system_appdata() {
+                              Ok(safe) => {
+                                  self.draft = RuntimeSettingsDraft::from_snapshot(
+                                      &RuntimeSettingsSnapshot {
+                                          revision: self.settings.current().revision,
+                                          safe,
+                                          secrets: self.settings.current().secrets.clone(),
+                                      },
+                                  );
+                                  self.status = "Imported preferences from AppData into draft. Save settings to apply.".to_owned();
+                                  self.status_is_error = false;
+                              }
+                              Err(error) => {
+                                  self.status = format!("Could not import from AppData: {error}");
+                                  self.status_is_error = true;
+                              }
+                          }
+                      }
+                      if ui.button("Switch to System mode (AppData)").clicked() {
+                          match self.settings.make_system() {
+                              Ok(path) => {
+                                  self.status =
+                                      format!("Switched to System mode ({}).", path.display());
+                                  self.status_is_error = false;
+                              }
+                              Err(error) => {
+                                  self.status = format!("Failed to switch to system mode: {error}");
+                                  self.status_is_error = true;
+                              }
+                          }
+                      }
+                  }
+              });
+          });
       });
 
       let connection_busy = self.connection_worker.is_some();
@@ -2163,6 +2486,36 @@ impl VideoPrepareApp {
             }
             Err(error) => {
                 self.project_status = format!("Project open failed: {error}");
+                self.project_status_is_error = true;
+                self.refresh_projects();
+            }
+        }
+    }
+
+    fn delete_project(&mut self, project_id: &str) {
+        let data_root = self.settings.current().safe.data_root.clone();
+        match crate::delete_project_from_data_root(&data_root, project_id) {
+            Ok(path) => {
+                if self
+                    .selected_project
+                    .as_ref()
+                    .is_some_and(|project| project.metadata.project_id == project_id)
+                {
+                    self.selected_project = None;
+                    self.inspection = None;
+                    self.selected_scene_id = None;
+                    self.last_run_report = None;
+                    self.last_flow_retry_report = None;
+                    self.last_remote_reconcile_report = None;
+                    self.screen = Screen::Projects;
+                }
+                self.project_status =
+                    format!("Deleted project `{project_id}` from disk ({}).", path.display());
+                self.project_status_is_error = false;
+                self.refresh_projects();
+            }
+            Err(error) => {
+                self.project_status = format!("Project delete failed: {error}");
                 self.project_status_is_error = true;
                 self.refresh_projects();
             }

@@ -52,9 +52,9 @@ pub use project::{
     TaskState, PROJECT_SCHEMA_VERSION, STATUS_SCHEMA_VERSION,
 };
 pub use project_catalog::{
-    create_project_from_script_path, create_project_from_script_text, discover_projects,
-    open_project_from_data_root, ProjectActionError, ProjectCatalog, ProjectCatalogError,
-    ProjectDiscoveryError, ProjectSummary,
+    create_project_from_script_path, create_project_from_script_text, delete_project_from_data_root,
+    discover_projects, open_project_from_data_root, ProjectActionError, ProjectCatalog,
+    ProjectCatalogError, ProjectDiscoveryError, ProjectSummary,
 };
 pub use providers::{
     AssetKind, CreatorAttribution, GenerateProjectOptions, OmniVoiceArtifact,
@@ -72,14 +72,16 @@ pub use remote_reconciliation::{
     RemoteAudioReconciliationReport,
 };
 pub use script::{
-    MediaKind, OmniVoiceScript, OmniVoiceSection, PreparedScript, SceneSpec, ScriptError,
-    VisualRequest,
+    extract_section_narrations, parse_omnivoice, MediaKind, OmniVoiceScript, OmniVoiceSection,
+    PreparedScript, SceneSpec, ScriptError, VisualRequest,
 };
-pub use script_input::{format_script, parse_script};
+pub use script_input::{format_script, inspect_audio_input, parse_script, AudioInspectionResult};
 pub use settings::{
-    extract_omnivoice_url, normalize_omnivoice_url, QualityPreset, RuntimeSecrets,
-    RuntimeSettingsDraft, RuntimeSettingsSnapshot, RuntimeSettingsStore, SafePreferences,
-    SettingsError, DEFAULT_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY,
+    detect_portable_dir, extract_omnivoice_url, is_portable_path, normalize_omnivoice_url,
+    system_preferences_path, QualityPreset, RuntimeSecrets, RuntimeSettingsDraft,
+    RuntimeSettingsSnapshot, RuntimeSettingsStore, SafePreferences, SettingsError,
+    DEFAULT_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY, PORTABLE_MARKER_FILE_NAME,
+    PORTABLE_SECRETS_FILE_NAME, SETTINGS_FILE_NAME,
 };
 pub use visual::{
     build_query_plan, load_visual_status, visual_status_path, AssetDownloadError, AssetDownloader,

@@ -210,6 +210,15 @@ pub fn open_project_from_data_root(
     Ok(project)
 }
 
+pub fn delete_project_from_data_root(
+    data_root: impl AsRef<Path>,
+    project_id: &str,
+) -> Result<PathBuf, ProjectActionError> {
+    ProjectStore::new(data_root.as_ref())
+        .delete(project_id)
+        .map_err(ProjectActionError::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,5 +379,22 @@ mod tests {
         assert_eq!(old_catalog.projects.len(), 1);
         assert_eq!(old_catalog.projects[0].project_id, "kept");
         assert!(old_root.join("projects/kept/project.json").is_file());
+    }
+
+    #[test]
+    fn delete_project_removes_from_disk_and_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("input.vprep");
+        fs::write(&script_path, include_str!("../examples/demo.vprep")).unwrap();
+
+        let created = create_project_from_script_path(temp.path(), "to-delete", &script_path).unwrap();
+        assert!(created.root.exists());
+
+        let deleted_root = delete_project_from_data_root(temp.path(), "to-delete").unwrap();
+        assert_eq!(deleted_root, created.root);
+        assert!(!deleted_root.exists());
+
+        let catalog = discover_projects(temp.path()).unwrap();
+        assert!(catalog.projects.is_empty());
     }
 }

@@ -187,6 +187,19 @@ impl ProjectStore {
         Self::open(self.projects_root().join(project_id))
     }
 
+    pub fn delete(&self, project_id: &str) -> Result<PathBuf, ProjectError> {
+        validate_project_id(project_id)?;
+        let project_root = self.projects_root().join(project_id);
+        if !project_root.exists() {
+            return Err(ProjectError::ProjectMissing(project_root));
+        }
+        fs::remove_dir_all(&project_root).map_err(|source| ProjectError::Io {
+            path: project_root.clone(),
+            source,
+        })?;
+        Ok(project_root)
+    }
+
     pub fn open(project_root: impl AsRef<Path>) -> Result<StoredProject, ProjectError> {
         let project_root = project_root.as_ref().to_path_buf();
         let project_json = project_root.join("project.json");
