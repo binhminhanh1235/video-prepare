@@ -6,8 +6,8 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    parse_script, reconcile_local_project, LocalReconciliationError, ProjectError, ProjectStore,
-    StoredProject, TaskState,
+    inspection::inspect_project, parse_script, reconcile_local_project, LocalReconciliationError,
+    ProjectError, ProjectStore, StoredProject, TaskState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,19 +20,38 @@ pub struct ProjectSummary {
     pub overall: TaskState,
     pub visual_flow: TaskState,
     pub audio_flow: TaskState,
+    pub visual_assets_ready: usize,
+    pub visual_assets_total: usize,
+    pub attention_count: usize,
 }
 
 impl From<&StoredProject> for ProjectSummary {
     fn from(project: &StoredProject) -> Self {
+        let inspection = inspect_project(project);
+        let visual_assets_total = inspection
+            .scenes
+            .iter()
+            .flat_map(|scene| scene.visual_requests.iter())
+            .map(|request| request.target_count as usize)
+            .sum();
+        let visual_assets_ready = inspection
+            .scenes
+            .iter()
+            .flat_map(|scene| scene.visual_requests.iter())
+            .map(|request| request.completed_assets)
+            .sum();
         Self {
             project_id: project.metadata.project_id.clone(),
             title: project.metadata.title.clone(),
             root: project.root.clone(),
             created_unix_ms: project.metadata.created_unix_ms,
             scene_count: project.metadata.scene_ids.len(),
-            overall: project.status.overall,
-            visual_flow: project.status.visual_flow,
-            audio_flow: project.status.audio_flow,
+            overall: inspection.overall,
+            visual_flow: inspection.visual_flow,
+            audio_flow: inspection.audio_flow,
+            visual_assets_ready,
+            visual_assets_total,
+            attention_count: inspection.problems.len(),
         }
     }
 }
@@ -230,6 +249,18 @@ mod tests {
         assert!(ids.contains(&"alpha"));
         assert!(ids.contains(&"beta"));
         assert_eq!(catalog.errors.len(), 1);
+        assert!(catalog
+            .projects
+            .iter()
+            .all(|project| project.visual_assets_total > 0));
+        assert!(catalog
+            .projects
+            .iter()
+            .all(|project| project.visual_assets_ready == 0));
+        assert!(catalog
+            .projects
+            .iter()
+            .all(|project| project.attention_count > 0));
         assert_eq!(catalog.errors[0].root.file_name().unwrap(), "broken");
         assert!(catalog
             .errors
@@ -250,6 +281,9 @@ mod tests {
                     overall: TaskState::Pending,
                     visual_flow: TaskState::Pending,
                     audio_flow: TaskState::Pending,
+                    visual_assets_ready: 0,
+                    visual_assets_total: 0,
+                    attention_count: 0,
                 },
                 ProjectSummary {
                     project_id: "a".to_owned(),
@@ -260,6 +294,9 @@ mod tests {
                     overall: TaskState::Pending,
                     visual_flow: TaskState::Pending,
                     audio_flow: TaskState::Pending,
+                    visual_assets_ready: 0,
+                    visual_assets_total: 0,
+                    attention_count: 0,
                 },
             ],
             errors: Vec::new(),

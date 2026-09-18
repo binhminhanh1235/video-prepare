@@ -12,6 +12,8 @@ use crate::VisualFlowStatus;
 pub struct InspectionProblem {
     pub area: String,
     pub scope: String,
+    pub scene_id: Option<String>,
+    pub visual_id: Option<String>,
     pub state: TaskState,
     pub message: String,
 }
@@ -102,6 +104,8 @@ pub fn inspect_project(project: &StoredProject) -> ProjectInspection {
         problems.push(InspectionProblem {
             area: "visual".to_owned(),
             scope: "project".to_owned(),
+            scene_id: None,
+            visual_id: None,
             state: project.status.visual_flow,
             message: format!("Visual status unavailable: {error}"),
         });
@@ -110,6 +114,8 @@ pub fn inspect_project(project: &StoredProject) -> ProjectInspection {
         problems.push(InspectionProblem {
             area: "audio".to_owned(),
             scope: "project".to_owned(),
+            scene_id: None,
+            visual_id: None,
             state: project.status.audio_flow,
             message: format!("Audio status unavailable: {error}"),
         });
@@ -154,6 +160,8 @@ pub fn inspect_project(project: &StoredProject) -> ProjectInspection {
                             problems.push(InspectionProblem {
                                 area: "visual".to_owned(),
                                 scope: format!("{}/{}", scene.id, request.id),
+                                scene_id: Some(scene.id.clone()),
+                                visual_id: Some(request.id.clone()),
                                 state: stored.state,
                                 message: stored.last_error.clone().unwrap_or_else(|| {
                                     format!(
@@ -220,6 +228,8 @@ pub fn inspect_project(project: &StoredProject) -> ProjectInspection {
                 problems.push(InspectionProblem {
                     area: "audio".to_owned(),
                     scope: "flow".to_owned(),
+                    scene_id: None,
+                    visual_id: None,
                     state: status.state,
                     message,
                 });
@@ -463,6 +473,13 @@ mod tests {
             .problems
             .iter()
             .any(|problem| problem.scope == "S01/V02" && problem.message == "rate limited"));
+        let targeted = inspection
+            .problems
+            .iter()
+            .find(|problem| problem.scope == "S01/V02")
+            .unwrap();
+        assert_eq!(targeted.scene_id.as_deref(), Some("S01"));
+        assert_eq!(targeted.visual_id.as_deref(), Some("V02"));
     }
 
     #[test]
